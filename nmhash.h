@@ -171,7 +171,9 @@ NMHASH32_short32(uint32_t const x, uint32_t const seed2, NMH_SHORT32_SEED2 const
 
 		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 7)), _mm_srli_epi32(hv, 13));
 		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 15)), _mm_srli_epi32(hv, 11));
-		return *(uint32_t*)&hv;
+
+		const uint32_t *const result = (const uint32_t*)&hv;
+		return *result;
 	}
 #	endif
 
@@ -300,7 +302,8 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		acc = _mm_mullo_epi16(acc, m2);
 		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
 
-		return *(uint32_t*)&acc;
+		const uint32_t *const result = (const uint32_t*)&acc;
+		return *result;
 	}
 #	endif
 }
@@ -484,7 +487,8 @@ static inline
 uint32_t
 NMHASH32_merge_acc(uint32_t *const NMH_RESTRICT acc, const size_t len)
 {
-	int i, sum = (uint32_t)(len >> 32);
+	uint32_t sum = (uint32_t)(len >> 32);
+	size_t i;
 	for (i = 0; i < sizeof(NMH_ACC_INIT)/sizeof(*NMH_ACC_INIT); ++i) {
 		acc[i] ^= NMH_ACC_INIT[i];
 	}
