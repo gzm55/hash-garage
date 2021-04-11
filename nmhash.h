@@ -86,6 +86,14 @@ extern "C" {
 #  define NMH_ALIGN(n)   /* disabled */
 #endif
 
+#if NMH_VECTOR > 0
+#  define NMH_ACC_ALIGN 64
+#elif defined(__BIGGEST_ALIGNMENT__)
+#  define NMH_ACC_ALIGN __BIGGEST_ALIGNMENT__
+#else
+#  define NMH_ACC_ALIGN 16
+#endif
+
 // constants
 
 // primes from xxh
@@ -95,7 +103,7 @@ extern "C" {
 #define NMH_PRIME32_4  UINT32_C(0x27D4EB2F)
 
 /*! Pseudorandom secret taken directly from FARSH. */
-NMH_ALIGN(64) static const uint32_t NMH_ACC_INIT[32] = {
+NMH_ALIGN(NMH_ACC_ALIGN) static const uint32_t NMH_ACC_INIT[32] = {
 	UINT32_C(0x71644897), UINT32_C(0xA20DF94E), UINT32_C(0x3819EF46), UINT32_C(0xA9DEACD8),
 	UINT32_C(0xA8FA763F), UINT32_C(0xE39C343F), UINT32_C(0xF9DCBBC7), UINT32_C(0xC70B4F1D),
 	UINT32_C(0x8A51E04B), UINT32_C(0xCDB45931), UINT32_C(0xC89F7EC9), UINT32_C(0xD9787364),
@@ -137,7 +145,12 @@ NMHASH32_short32(uint32_t const x, uint32_t const seed2, NMH_SHORT32_SEED2 const
 
 #	if NMH_VECTOR == NMH_SCALAR
 	{
-		union { uint32_t u32; uint16_t u16[2]; } vx = { .u32 = x };
+		union { uint32_t u32; uint16_t u16[2]; } vx
+#		if !defined(_MSC_VER) || (defined(_MSVC_LANG) && _MSVC_LANG > 201703L)
+			= { .u32 = x };
+#		else
+			; vx.u32 = x;
+#		endif
 		vx.u32 ^= (vx.u32 << 18) ^ (vx.u32 >> 22);
 		vx.u32 ^= (vx.u32 >> 11) ^ (vx.u32 >> 13);
 		vx.u16[0] *= (uint16_t)__NMH_M1;
@@ -191,7 +204,12 @@ uint32_t
 NMHASH32_avalanche32(uint32_t const x, NMH_AVALANCHE const type)
 {
 	//[-21 -8 cce5196d 12 -7 464be229 -21 -8] = 3.2267098842182733
-	union { uint32_t u32; uint16_t u16[2]; } vx = { .u32 = x };
+	union { uint32_t u32; uint16_t u16[2]; } vx
+#	if !defined(_MSC_VER) || (defined(_MSVC_LANG) && _MSVC_LANG > 201703L)
+		= { .u32 = x };
+#	else
+		; vx.u32 = x;
+#	endif
 	vx.u32    ^= (vx.u32 >> 8) ^ (vx.u32 >> 21);
 	vx.u16[0] *= (uint16_t)__NMH_M3;
 	vx.u16[1] *= (uint16_t)(__NMH_M3 >> 16);
@@ -308,11 +326,11 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 #	endif
 }
 
-NMH_ALIGN(64) static const uint32_t __NMH_M3_V[16] = {
+NMH_ALIGN(NMH_ACC_ALIGN) static const uint32_t __NMH_M3_V[16] = {
 	__NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3,
 	__NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3,
 };
-NMH_ALIGN(64) static const uint32_t __NMH_M4_V[16] = {
+NMH_ALIGN(NMH_ACC_ALIGN) static const uint32_t __NMH_M4_V[16] = {
 	__NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4,
 	__NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4, __NMH_M4,
 };
@@ -487,7 +505,11 @@ static inline
 uint32_t
 NMHASH32_merge_acc(uint32_t *const NMH_RESTRICT acc, const size_t len)
 {
+#	if SIZE_MAX > UINT32_C(-1)
 	uint32_t sum = (uint32_t)(len >> 32);
+#	else
+	uint32_t sum = 0;
+#	endif
 	size_t i;
 	for (i = 0; i < sizeof(NMH_ACC_INIT)/sizeof(*NMH_ACC_INIT); ++i) {
 		acc[i] ^= NMH_ACC_INIT[i];
@@ -502,7 +524,7 @@ static
 uint32_t
 NMHASH32_long(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed)
 {
-	NMH_ALIGN(64) uint32_t acc[sizeof(NMH_ACC_INIT)/sizeof(*NMH_ACC_INIT)];
+	NMH_ALIGN(NMH_ACC_ALIGN) uint32_t acc[sizeof(NMH_ACC_INIT)/sizeof(*NMH_ACC_INIT)];
 	size_t const nbRounds = (len - 1) / sizeof(acc);
 	size_t i;
 
@@ -533,7 +555,12 @@ NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t const 
 			return NMHASH32_5to127(p, len, seed, NMH_AVALANCHE_INNER);
 		}
 		if (NMH_likely(len > 0)) {
-			union { uint32_t u32; uint8_t u8[4]; } x = { .u32 = p[0] };
+			union { uint32_t u32; uint8_t u8[4]; } x
+#			if !defined(_MSC_VER) || (defined(_MSVC_LANG) && _MSVC_LANG > 201703L)
+				= { .u32 = p[0] };
+#			else
+				; x.u32 = p[0];
+#			endif
 			x.u8[1] = p[len-1];
 			x.u32 <<= 16;
 			x.u8[0] = p[len>>1];
