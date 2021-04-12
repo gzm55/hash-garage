@@ -205,7 +205,7 @@ NMHASH32_avalanche32(uint32_t const x, NMH_AVALANCHE const type)
 {
 	//[-21 -8 cce5196d 12 -7 464be229 -21 -8] = 3.2267098842182733
 	union { uint32_t u32; uint16_t u16[2]; } vx
-#	if !defined(_MSC_VER) || (defined(_MSVC_LANG) && _MSVC_LANG > 201703L)
+#	if !defined(_MSC_VER) || _MSC_VER > 1927
 		= { .u32 = x };
 #	else
 		; vx.u32 = x;
@@ -556,7 +556,7 @@ NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t const 
 		}
 		if (NMH_likely(len > 0)) {
 			union { uint32_t u32; uint8_t u8[4]; } x
-#			if !defined(_MSC_VER) || (defined(_MSVC_LANG) && _MSVC_LANG > 201703L)
+#	                if !defined(_MSC_VER) || _MSC_VER > 1927
 				= { .u32 = p[0] };
 #			else
 				; x.u32 = p[0];
