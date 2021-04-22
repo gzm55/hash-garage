@@ -1,6 +1,12 @@
-// verification:
-// rurban/smhasher: 0x0DC5C2DC
-// demerphq/smhasher: 0xDF3272CF
+/*
+ * verification:
+ * NMHASH32:
+ *   rurban/smhasher: 0x0DC5C2DC
+ *   demerphq/smhasher: 0xDF3272CF
+ * NMHASH32X:
+ *   rurban/smhasher: 0x3F6AF4B5
+ *   demerphq/smhasher: 0x9F7098EA
+ */
 
 #ifdef __cplusplus
 extern "C" {
@@ -9,7 +15,7 @@ extern "C" {
 #ifndef _nmhash_h_
 #define _nmhash_h_
 
-#define NMH_VERSION 0
+#define NMH_VERSION 1
 
 #include <stdint.h>
 #include <string.h>
@@ -44,7 +50,7 @@ extern "C" {
 #  define NMH_RESTRICT   /* disable */
 #endif
 
-// endian macros
+/* endian macros */
 #ifndef NMHASH_LITTLE_ENDIAN
 #  if defined(_WIN32) || defined(__LITTLE_ENDIAN__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 #    define NMHASH_LITTLE_ENDIAN 1
@@ -56,7 +62,7 @@ extern "C" {
 #  endif
 #endif
 
-// vector macros
+/* vector macros */
 #define NMH_SCALAR 0
 #define NMH_SSE2   1
 #define NMH_AVX2   2
@@ -64,9 +70,9 @@ extern "C" {
 
 #ifndef NMH_VECTOR    /* can be defined on command line */
 #  if defined(__AVX512BW__)
-#    define NMH_VECTOR NMH_AVX512 // _mm512_mullo_epi16 requires AVX512BW
+#    define NMH_VECTOR NMH_AVX512 /* _mm512_mullo_epi16 requires AVX512BW */
 #  elif defined(__AVX2__)
-#    define NMH_VECTOR NMH_AVX2  // add '-mno-avx256-split-unaligned-load' and '-mn-oavx256-split-unaligned-store' for gcc
+#    define NMH_VECTOR NMH_AVX2  /* add '-mno-avx256-split-unaligned-load' and '-mn-oavx256-split-unaligned-store' for gcc */
 #  elif defined(__SSE2__) || defined(_M_AMD64) || defined(_M_X64) || (defined(_M_IX86_FP) && (_M_IX86_FP == 2))
 #    define NMH_VECTOR NMH_SSE2
 #  else
@@ -74,7 +80,7 @@ extern "C" {
 #  endif
 #endif
 
-// align macros
+/* align macros */
 #if defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)   /* C11+ */
 #  include <stdalign.h>
 #  define NMH_ALIGN(n)      alignas(n)
@@ -94,9 +100,9 @@ extern "C" {
 #  define NMH_ACC_ALIGN 16
 #endif
 
-// constants
+/* constants */
 
-// primes from xxh
+/* primes from xxh */
 #define NMH_PRIME32_1  UINT32_C(0x9E3779B1)
 #define NMH_PRIME32_2  UINT32_C(0x85EBCA77)
 #define NMH_PRIME32_3  UINT32_C(0xC2B2AE3D)
@@ -115,9 +121,9 @@ NMH_ALIGN(NMH_ACC_ALIGN) static const uint32_t NMH_ACC_INIT[32] = {
 	UINT32_C(0x3C2852BB), UINT32_C(0x91C300CB), UINT32_C(0x88D0658B), UINT32_C(0x1B532EA3),
 };
 
-// read functions
+/* read functions */
 static inline
-uint64_t
+uint32_t
 NMH_readLE32(const void *const p)
 {
 	uint32_t v;
@@ -133,24 +139,33 @@ NMH_readLE32(const void *const p)
 #	endif
 }
 
+static inline
+uint16_t
+NMH_readLE16(const void *const p)
+{
+	uint16_t v;
+	memcpy(&v, p, 2);
+#	if (NMHASH_LITTLE_ENDIAN)
+	return v;
+#	else
+	return (uint16_t)((v << 8) | (v >> 8));
+#	endif
+}
+
 typedef enum { NMH_SHORT32_WITHOUT_SEED2=0, NMH_SHORT32_WITH_SEED2=1 } NMH_SHORT32_SEED2;
 
 static inline
 uint32_t
 NMHASH32_short32(uint32_t const x, uint32_t const seed2, NMH_SHORT32_SEED2 const withSeed2)
 {
-	// score = 1.8481760596580992
+	/* score = 1.8481760596580992 */
 #	define __NMH_M1 UINT32_C(0x3E550CF1)
 #	define __NMH_M2 UINT32_C(0x9E1B7E49)
 
 #	if NMH_VECTOR == NMH_SCALAR
 	{
-		union { uint32_t u32; uint16_t u16[2]; } vx
-#		if !defined(_MSC_VER) || (defined(_MSVC_LANG) && _MSVC_LANG > 201703L)
-			= { .u32 = x };
-#		else
-			; vx.u32 = x;
-#		endif
+		union { uint32_t u32; uint16_t u16[2]; } vx;
+		vx.u32 = x;
 		vx.u32 ^= (vx.u32 << 18) ^ (vx.u32 >> 22);
 		vx.u32 ^= (vx.u32 >> 11) ^ (vx.u32 >> 13);
 		vx.u16[0] *= (uint16_t)__NMH_M1;
@@ -166,7 +181,7 @@ NMHASH32_short32(uint32_t const x, uint32_t const seed2, NMH_SHORT32_SEED2 const
 		vx.u32 ^= (vx.u32 << 15) ^ ( vx.u32 >> 11);
 		return vx.u32;
 	}
-#	else // at least NMH_SSE2
+#	else /* at least NMH_SSE2 */
 	{
 		__m128i hv = _mm_setr_epi32(x, 0, 0, 0);
 
@@ -203,13 +218,9 @@ static inline
 uint32_t
 NMHASH32_avalanche32(uint32_t const x, NMH_AVALANCHE const type)
 {
-	//[-21 -8 cce5196d 12 -7 464be229 -21 -8] = 3.2267098842182733
-	union { uint32_t u32; uint16_t u16[2]; } vx
-#	if !defined(_MSC_VER) || _MSC_VER > 1927
-		= { .u32 = x };
-#	else
-		; vx.u32 = x;
-#	endif
+	/* [-21 -8 cce5196d 12 -7 464be229 -21 -8] = 3.2267098842182733 */
+	union { uint32_t u32; uint16_t u16[2]; } vx;
+	vx.u32 = x;
 	vx.u32    ^= (vx.u32 >> 8) ^ (vx.u32 >> 21);
 	vx.u16[0] *= (uint16_t)__NMH_M3;
 	vx.u16[1] *= (uint16_t)(__NMH_M3 >> 16);
@@ -241,7 +252,7 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		uint32_t d = NMH_PRIME32_4 + seed;
 
 		if (NMH_AVALANCHE_FULL == type) {
-			// 17 to 127 bytes
+			/* 17 to 127 bytes */
 			int const nbRounds = (int)(len - 1) / 16;
 			int i;
 			for (i = 0; i < nbRounds; ++i) {
@@ -255,7 +266,7 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 			c = NMHASH32_mix32(c, NMH_readLE32(p + len - 16 + 8), NMH_AVALANCHE_FULL);
 			d = NMHASH32_mix32(d, NMH_readLE32(p + len - 16 + 12), NMH_AVALANCHE_FULL);
 		} else {
-			// 5 to 16 bytes
+			/* 5 to 16 bytes */
 			a = NMHASH32_mix32(a, NMH_readLE32(p), NMH_AVALANCHE_FULL);
 			b = NMHASH32_mix32(b, NMH_readLE32(p + ((len>>3)<<2)), NMH_AVALANCHE_FULL);
 			c = NMHASH32_mix32(c, NMH_readLE32(p + len - 4), NMH_AVALANCHE_FULL);
@@ -269,7 +280,7 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 
 		return NMHASH32_mix32(a + b + c + d, (uint32_t)len + seed, NMH_AVALANCHE_FULL);
 	}
-#	else // at least NMH_SSE2
+#	else /* at least NMH_SSE2 */
 	{
 		__m128i const h0 = _mm_setr_epi32(NMH_PRIME32_1, NMH_PRIME32_2, NMH_PRIME32_3, NMH_PRIME32_4);
 		__m128i const m1 = _mm_set1_epi32(__NMH_M3);
@@ -279,7 +290,7 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		__m128i       data;
 
 		if (NMH_AVALANCHE_FULL == type) {
-			// 17 to 127 bytes
+			/* 17 to 127 bytes */
 			int const nbRounds = (int)(len - 1) / 16;
 			int i;
 			for (i = 0; i < nbRounds; ++i) {
@@ -293,7 +304,7 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 
 			data = _mm_loadu_si128((const __m128i *)(p + len - 16));
 		} else {
-			// 5 to 16 bytes
+			/* 5 to 16 bytes */
 			data = _mm_setr_epi32(
 					NMH_readLE32(p),
 					NMH_readLE32(p + ((len>>3)<<2)),
@@ -341,8 +352,9 @@ static inline
 void
 NMHASH32_long_round_scalar(uint32_t *const NMH_RESTRICT acc, const uint8_t* const NMH_RESTRICT p, const NMH_AVALANCHE type)
 {
-	// breadth first calculation will hint some compiler to auto vectorize the code
-	// on gcc, the performance becomes 10x than the depth first, and about 80% of the manually vectorized code
+	/* breadth first calculation will hint some compiler to auto vectorize the code
+	 * on gcc, the performance becomes 10x than the depth first, and about 80% of the manually vectorized code
+	 */
 	const size_t nbGroups = sizeof(NMH_ACC_INIT) / sizeof(*NMH_ACC_INIT);
 	size_t i;
 
@@ -503,7 +515,39 @@ NMHASH32_long_round_avx512(uint32_t *const NMH_RESTRICT acc, const uint8_t* cons
 
 static inline
 uint32_t
-NMHASH32_merge_acc(uint32_t *const NMH_RESTRICT acc, const size_t len)
+NMHASH32X_avalanche32_m2(uint32_t x)
+{
+	/* mixer with 2 mul from skeeto/hash-prospector:
+	 * [15 d168aaad 15 af723597 15] = 0.15983776156606694
+	 */
+	x ^= x >> 15;
+	x *= UINT32_C(0xD168AAAD);
+	x ^= x >> 15;
+	x *= UINT32_C(0xAF723597);
+	x ^= x >> 15;
+	return x;
+}
+
+static inline
+uint32_t
+NMHASH32X_avalanche32_m3(uint32_t x, const uint32_t seed2)
+{
+	/* mixer: [16 4c749d4b 14 a8437449 rot:12 4bf49d4b 16] = 0.27840170934551578
+	 */
+	x ^= x >> 16;
+	x *= UINT32_C(0x4C749D4B);
+	x += seed2;
+	x ^= x >> 14;
+	x *= UINT32_C(0xA8437449);
+	x  = x << 12 | x >> 20;
+	x *= UINT32_C(0x4BF49D4B);
+	x ^= x >> 16;
+	return x;
+}
+
+static inline
+uint32_t
+NMHASH32_merge_acc(uint32_t *const NMH_RESTRICT acc, const size_t len, NMH_AVALANCHE const type)
 {
 #	if SIZE_MAX > UINT32_C(-1)
 	uint32_t sum = (uint32_t)(len >> 32);
@@ -517,18 +561,24 @@ NMHASH32_merge_acc(uint32_t *const NMH_RESTRICT acc, const size_t len)
 	for (i = 0; i < sizeof(NMH_ACC_INIT)/sizeof(*NMH_ACC_INIT); ++i) {
 		sum += acc[i];
 	}
-	return NMHASH32_mix32(sum, (uint32_t)len, NMH_AVALANCHE_FULL);
+	if (NMH_AVALANCHE_FULL == type) {
+		/* for NMHASH32X */
+		return NMHASH32X_avalanche32_m2(sum ^ len);
+	} else {
+		/* for NMHASH32 */
+		return NMHASH32_mix32(sum, (uint32_t)len, NMH_AVALANCHE_FULL);
+	}
 }
 
 static
 uint32_t
-NMHASH32_long(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed)
+NMHASH32_long(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed, NMH_AVALANCHE const type)
 {
 	NMH_ALIGN(NMH_ACC_ALIGN) uint32_t acc[sizeof(NMH_ACC_INIT)/sizeof(*NMH_ACC_INIT)];
 	size_t const nbRounds = (len - 1) / sizeof(acc);
 	size_t i;
 
-	// init
+	/* init */
 	for (i = 0; i < sizeof(NMH_ACC_INIT)/sizeof(*NMH_ACC_INIT); ++i) {
 		acc[i] = NMH_ACC_INIT[i] + seed;
 	}
@@ -538,7 +588,7 @@ NMHASH32_long(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t co
 	}
 	NMHASH32_long_round(acc, p + len - sizeof(acc), NMH_AVALANCHE_FULL);
 
-	return NMHASH32_merge_acc(acc, len);
+	return NMHASH32_merge_acc(acc, len, type);
 }
 
 #undef __NMH_M3
@@ -555,12 +605,8 @@ NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t const 
 			return NMHASH32_5to127(p, len, seed, NMH_AVALANCHE_INNER);
 		}
 		if (NMH_likely(len > 0)) {
-			union { uint32_t u32; uint8_t u8[4]; } x
-#	                if !defined(_MSC_VER) || _MSC_VER > 1927
-				= { .u32 = p[0] };
-#			else
-				; x.u32 = p[0];
-#			endif
+			union { uint32_t u32; uint8_t u8[4]; } x;
+			x.u32 = p[0];
 			x.u8[1] = p[len-1];
 			x.u32 <<= 16;
 			x.u8[0] = p[len>>1];
@@ -572,7 +618,123 @@ NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t const 
 	if (NMH_likely(len < 128)) {
 		return NMHASH32_5to127(p, len, seed, NMH_AVALANCHE_FULL);
 	}
-	return NMHASH32_long(p, len, seed);
+	return NMHASH32_long(p, len, seed, NMH_AVALANCHE_INNER);
+}
+
+static inline
+uint32_t
+NMHASH32X_4to8(const uint8_t* const NMH_RESTRICT p, size_t len, uint32_t const seed)
+{
+	/* base mixer: [16 a52fb2cd 15 551e4d49 16] = 0.17162579707098322
+	 * tail mixer: [16 a52fb2cd 15 551e4d49 16 a52fb2cd 17] = 0.023181031813212738
+	 */
+
+	uint32_t x = NMH_PRIME32_1 + (uint16_t)seed;
+	uint32_t y = NMH_PRIME32_2 + seed;
+
+	if (NMH_likely(len != 4)) {
+		x ^= NMH_readLE32(p);
+		x ^= x >> 16;
+		x *= UINT32_C(0xA52FB2CD);
+		x ^= x >> 15;
+		x *= UINT32_C(0x551E4D49);
+	}
+
+	y ^= NMH_readLE32(p + len - 4);
+	y ^= y >> 16;
+	y *= UINT32_C(0xA52FB2CD);
+	y ^= y >> 15;
+	y *= UINT32_C(0x551E4D49);
+
+	x += len;
+	y = y << 3 | y >> (32 - 3);
+	x ^= y;
+
+	x ^= x >> 16;
+	x *= UINT32_C(0xA52FB2CD);
+	x ^= x >> 17;
+	return x;
+}
+
+static inline
+uint32_t
+NMHASH32X_9to127(const uint8_t* const NMH_RESTRICT p, size_t len, uint32_t const seed)
+{
+	/* - at least 9 bytes
+	 * - base mixer: [16 a52fb2cd 15 551e4d49 16] = 0.17162579707098322
+	 * - tail mixer: [16 a52fb2cd 15 551e4d49 141cc535 13] = 0.21156257730123229
+	 */
+
+	uint32_t x = NMH_PRIME32_1 + seed;
+	uint32_t y = NMH_PRIME32_4 + (uint16_t)seed; /* avoid bad seeds */
+	size_t i, r = (len - 1) / 8;
+
+	for (i = 0; i < r; ++i) {
+		y ^= NMH_readLE32(p + i * 8 + 4);
+		y ^= y >> 16;
+		y *= UINT32_C(0xA52FB2CD);
+		y ^= y >> 15;
+		y *= UINT32_C(0x551E4D49);
+
+		x ^= NMH_readLE32(p + i * 8);
+		x ^= x >> 16;
+		x *= UINT32_C(0xA52FB2CD);
+		x ^= x >> 15;
+		x *= UINT32_C(0x551E4D49);
+	}
+
+	if (NMH_likely(((uint8_t)len-1) & 4)) {
+		x ^= NMH_readLE32(p + r * 8);
+		x ^= x >> 16;
+		x *= UINT32_C(0xA52FB2CD);
+		x ^= x >> 15;
+		x *= UINT32_C(0x551E4D49);
+	}
+
+	y ^= NMH_readLE32(p + len - 4);
+	y ^= y >> 16;
+	y *= UINT32_C(0xA52FB2CD);
+	y ^= y >> 15;
+	y *= UINT32_C(0x551E4D49);
+
+	x += len;
+	y  = y << 3 | y >> (32 - 3); /* rotate one lane to pass Diff test */
+	x ^= y;
+
+	x *= UINT32_C(0x141CC535);
+	x ^= x >> 13;
+	return x;
+}
+
+/* use 32*32->32 multiplication for short hash */
+static inline
+uint32_t
+NMHASH32X(const void* const NMH_RESTRICT input, size_t const len, uint32_t const seed)
+{
+	const uint8_t *const p = (const uint8_t *)input;
+	if (NMH_likely(len <= 8)) {
+		if (NMH_likely(len >= 4)) {
+			return NMHASH32X_4to8(p, len, seed);
+		}
+
+		/* 0-3 bytes */
+		uint32_t const seed2 = seed + len;
+		union { uint32_t u32; uint16_t u16[2]; uint8_t u8[4]; } x;
+		x.u8[2] = len;
+		switch (len) {
+			case 0: return NMHASH32X_avalanche32_m2(NMH_PRIME32_1 ^ seed);
+			case 1: x.u8[1] = p[0];
+				break;
+			case 3: x.u8[3] = p[2];
+			case 2: x.u16[0] = NMH_readLE16(p);
+
+		}
+		return NMHASH32X_avalanche32_m3((NMH_PRIME32_4 + seed2) ^ x.u32, seed2);
+	}
+	if (NMH_likely(len < 128)) {
+		return NMHASH32X_9to127(p, len, seed);
+	}
+	return NMHASH32_long(p, len, seed, NMH_AVALANCHE_FULL);
 }
 
 #endif /* _nmhash_h_ */
