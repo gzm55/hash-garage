@@ -183,19 +183,19 @@ NMHASH32_short32(uint32_t const x, uint32_t const seed2, NMH_SHORT32_SEED2 const
 	}
 #	else /* at least NMH_SSE2 */
 	{
-		__m128i hv = _mm_setr_epi32(x, 0, 0, 0);
+		__m128i hv = _mm_setr_epi32((int)x, 0, 0, 0);
 
 		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 18)), _mm_srli_epi32(hv, 22));
 		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_srli_epi32(hv, 11)), _mm_srli_epi32(hv, 13));
-		hv = _mm_mullo_epi16(hv, _mm_setr_epi32(__NMH_M1, 0, 0, 0));
+		hv = _mm_mullo_epi16(hv, _mm_setr_epi32((int)__NMH_M1, 0, 0, 0));
 
 		if (NMH_SHORT32_WITH_SEED2 == withSeed2) {
-			hv = _mm_add_epi32(hv, _mm_setr_epi32(seed2, 0, 0, 0));
+			hv = _mm_add_epi32(hv, _mm_setr_epi32((int)seed2, 0, 0, 0));
 		}
 
 		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 15)), _mm_srli_epi32(hv, 24));
 		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_srli_epi32(hv, 6)), _mm_srli_epi32(hv, 21));
-		hv = _mm_mullo_epi16(hv, _mm_setr_epi32(__NMH_M2, 0, 0, 0));
+		hv = _mm_mullo_epi16(hv, _mm_setr_epi32((int)__NMH_M2, 0, 0, 0));
 
 		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 7)), _mm_srli_epi32(hv, 13));
 		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 15)), _mm_srli_epi32(hv, 11));
@@ -222,11 +222,11 @@ NMHASH32_avalanche32(uint32_t const x, NMH_AVALANCHE const type)
 	union { uint32_t u32; uint16_t u16[2]; } vx;
 	vx.u32 = x;
 	vx.u32    ^= (vx.u32 >> 8) ^ (vx.u32 >> 21);
-	vx.u16[0] *= (uint16_t)__NMH_M3;
-	vx.u16[1] *= (uint16_t)(__NMH_M3 >> 16);
+	vx.u16[0] = (uint16_t)(vx.u16[0] * (uint16_t)__NMH_M3);
+	vx.u16[1] = (uint16_t)(vx.u16[1] * (uint16_t)(__NMH_M3 >> 16));
 	vx.u32    ^= (vx.u32 << 12) ^ (vx.u32 >> 7);
-	vx.u16[0] *= (uint16_t)__NMH_M4;
-	vx.u16[1] *= (uint16_t)(__NMH_M4 >> 16);
+	vx.u16[0] = (uint16_t)(vx.u16[0] * (uint16_t)__NMH_M4);
+	vx.u16[1] = (uint16_t)(vx.u16[1] * (uint16_t)(__NMH_M4 >> 16));
 	if (NMH_AVALANCHE_FULL == type) {
 		return vx.u32 ^ (vx.u32 >> 8) ^ (vx.u32 >> 21);
 	}
@@ -282,11 +282,11 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 	}
 #	else /* at least NMH_SSE2 */
 	{
-		__m128i const h0 = _mm_setr_epi32(NMH_PRIME32_1, NMH_PRIME32_2, NMH_PRIME32_3, NMH_PRIME32_4);
-		__m128i const m1 = _mm_set1_epi32(__NMH_M3);
-		__m128i const m2 = _mm_set1_epi32(__NMH_M4);
+		__m128i const h0 = _mm_setr_epi32((int)NMH_PRIME32_1, (int)NMH_PRIME32_2, (int)NMH_PRIME32_3, (int)NMH_PRIME32_4);
+		__m128i const m1 = _mm_set1_epi32((int)__NMH_M3);
+		__m128i const m2 = _mm_set1_epi32((int)__NMH_M4);
 
-		__m128i       acc  = _mm_add_epi32(h0, _mm_set1_epi32(seed));
+		__m128i       acc  = _mm_add_epi32(h0, _mm_set1_epi32((int)seed));
 		__m128i       data;
 
 		if (NMH_AVALANCHE_FULL == type) {
@@ -306,10 +306,10 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		} else {
 			/* 5 to 16 bytes */
 			data = _mm_setr_epi32(
-					NMH_readLE32(p),
-					NMH_readLE32(p + ((len>>3)<<2)),
-					NMH_readLE32(p + len - 4),
-					NMH_readLE32(p + len - 4 - ((len>>3)<<2)));
+					(int)NMH_readLE32(p),
+					(int)NMH_readLE32(p + ((len>>3)<<2)),
+					(int)NMH_readLE32(p + len - 4),
+					(int)NMH_readLE32(p + len - 4 - ((len>>3)<<2)));
 		}
 
 
@@ -324,7 +324,7 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		acc = _mm_add_epi32(acc, _mm_bsrli_si128(acc, 4));
 		acc = _mm_add_epi32(acc, _mm_bsrli_si128(acc, 8));
 
-		acc = _mm_xor_si128(acc, _mm_setr_epi32((uint32_t)len + seed, 0, 0, 0));
+		acc = _mm_xor_si128(acc, _mm_setr_epi32((int)((uint32_t)len + seed), 0, 0, 0));
 		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
 		acc = _mm_mullo_epi16(acc, m1);
 		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_slli_epi32(acc, 12)), _mm_srli_epi32(acc, 7));
@@ -563,7 +563,7 @@ NMHASH32_merge_acc(uint32_t *const NMH_RESTRICT acc, const size_t len, NMH_AVALA
 	}
 	if (NMH_AVALANCHE_FULL == type) {
 		/* for NMHASH32X */
-		return NMHASH32X_avalanche32_m2(sum ^ len);
+		return NMHASH32X_avalanche32_m2(sum ^ (uint32_t)len);
 	} else {
 		/* for NMHASH32 */
 		return NMHASH32_mix32(sum, (uint32_t)len, NMH_AVALANCHE_FULL);
@@ -646,7 +646,7 @@ NMHASH32X_4to8(const uint8_t* const NMH_RESTRICT p, size_t len, uint32_t const s
 	y ^= y >> 15;
 	y *= UINT32_C(0x551E4D49);
 
-	x += len;
+	x += (uint32_t)len;
 	y = y << 3 | y >> (32 - 3);
 	x ^= y;
 
@@ -697,7 +697,7 @@ NMHASH32X_9to127(const uint8_t* const NMH_RESTRICT p, size_t len, uint32_t const
 	y ^= y >> 15;
 	y *= UINT32_C(0x551E4D49);
 
-	x += len;
+	x += (uint32_t)len;
 	y  = y << 3 | y >> (32 - 3); /* rotate one lane to pass Diff test */
 	x ^= y;
 
@@ -718,14 +718,14 @@ NMHASH32X(const void* const NMH_RESTRICT input, size_t const len, uint32_t const
 		}
 
 		/* 0-3 bytes */
-		uint32_t const seed2 = seed + len;
+		uint32_t const seed2 = seed + (uint32_t)len;
 		union { uint32_t u32; uint16_t u16[2]; uint8_t u8[4]; } x;
-		x.u8[2] = len;
+		x.u8[2] = (uint8_t)len;
 		switch (len) {
 			case 0: return NMHASH32X_avalanche32_m2(NMH_PRIME32_1 ^ seed);
 			case 1: x.u8[1] = p[0];
 				break;
-			case 3: x.u8[3] = p[2];
+			case 3: x.u8[3] = p[2]; /*@fallthrough@*/
 			case 2: x.u16[0] = NMH_readLE16(p);
 
 		}
