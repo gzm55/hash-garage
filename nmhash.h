@@ -607,10 +607,10 @@ NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t const 
 		if (NMH_likely(len > 0)) {
 			union { uint32_t u32; uint8_t u8[4]; } x;
 			x.u32 = p[0];
-			x.u8[1] = p[len-1];
+			x.u8[NMHASH_LITTLE_ENDIAN ? 1 : 2] = p[len-1];
 			x.u32 <<= 16;
-			x.u8[0] = p[len>>1];
-			x.u8[1] = p[len>>2];
+			x.u8[NMHASH_LITTLE_ENDIAN ? 0 : 3] = p[len>>1];
+			x.u8[NMHASH_LITTLE_ENDIAN ? 1 : 2] = p[len>>2];
 			return -NMHASH32_short32((NMH_PRIME32_4 + seed) ^ x.u32, (uint32_t)len ^ seed, NMH_SHORT32_WITH_SEED2);
                 }
 		return NMHASH32_short32(NMH_PRIME32_1 + seed, 0, NMH_SHORT32_WITHOUT_SEED2);
@@ -720,13 +720,13 @@ NMHASH32X(const void* const NMH_RESTRICT input, size_t const len, uint32_t const
 		/* 0-3 bytes */
 		uint32_t const seed2 = seed + (uint32_t)len;
 		union { uint32_t u32; uint16_t u16[2]; uint8_t u8[4]; } x;
-		x.u8[2] = (uint8_t)len;
+		x.u32 = (uint32_t)len << 16;
 		switch (len) {
 			case 0: return NMHASH32X_avalanche32_m2(NMH_PRIME32_1 ^ seed);
-			case 1: x.u8[1] = p[0];
+			case 1: x.u8[NMHASH_LITTLE_ENDIAN ? 1 : 2] = p[0];
 				break;
-			case 3: x.u8[3] = p[2]; /*@fallthrough@*/
-			case 2: x.u16[0] = NMH_readLE16(p);
+			case 3: x.u8[NMHASH_LITTLE_ENDIAN ? 3 : 0] = p[2]; /*@fallthrough@*/
+			case 2: x.u16[NMHASH_LITTLE_ENDIAN ? 0 : 1] = NMH_readLE16(p);
 
 		}
 		return NMHASH32X_avalanche32_m3((NMH_PRIME32_4 + seed2) ^ x.u32, seed2);
