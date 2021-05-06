@@ -4,8 +4,8 @@
  *   rurban/smhasher: 0x0DC5C2DC
  *   demerphq/smhasher: 0xDF3272CF
  * NMHASH32X:
- *   rurban/smhasher: 0x3F6AF4B5
- *   demerphq/smhasher: 0x9F7098EA
+ *   rurban/smhasher: 0xB3AD8BB9
+ *   demerphq/smhasher: 0xBCCA21BD
  */
 
 #ifdef __cplusplus
@@ -15,7 +15,15 @@ extern "C" {
 #ifndef _nmhash_h_
 #define _nmhash_h_
 
-#define NMH_VERSION 1
+#define NMH_VERSION 2-dev
+
+#ifdef _MSC_VER
+#  pragma warning(push, 3)
+#endif
+
+#if defined(__cplusplus) && __cplusplus < 201103L
+#  define __STDC_CONSTANT_MACROS 1
+#endif
 
 #include <stdint.h>
 #include <string.h>
@@ -30,12 +38,30 @@ extern "C" {
 #  include <intrin.h>
 #endif
 
+#ifdef _MSC_VER
+#  pragma warning(pop)
+#endif
+
 #if (defined(__GNUC__) && (__GNUC__ >= 3))  \
   || (defined(__INTEL_COMPILER) && (__INTEL_COMPILER >= 800)) \
   || defined(__clang__)
 #    define NMH_likely(x) __builtin_expect(x, 1)
 #else
 #    define NMH_likely(x) (x)
+#endif
+
+#if defined(__has_builtin)
+#  if __has_builtin(__builtin_rotateleft32)
+#    define NMH_rotl32 __builtin_rotateleft32 /* clang */
+#  endif
+#endif
+#if !defined(NMH_rotl32)
+#  if defined(_MSC_VER)
+     /* Note: although _rotl exists for minGW (GCC under windows), performance seems poor */
+#    define NMH_rotl32(x,r) _rotl(x,r)
+#  else
+#    define NMH_rotl32(x,r) (((x) << (r)) | ((x) >> (32 - (r))))
+#  endif
 #endif
 
 #if ((defined(sun) || defined(__sun)) && __cplusplus) /* Solaris includes __STDC_VERSION__ with C++. Tested with GCC 5.5 */
@@ -52,7 +78,7 @@ extern "C" {
 
 /* endian macros */
 #ifndef NMHASH_LITTLE_ENDIAN
-#  if defined(_WIN32) || defined(__LITTLE_ENDIAN__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#  if defined(_WIN32) || defined(__LITTLE_ENDIAN__) || defined(__x86_64__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) || defined(__SDCC)
 #    define NMHASH_LITTLE_ENDIAN 1
 #  elif defined(__BIG_ENDIAN__) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
 #    define NMHASH_LITTLE_ENDIAN 0
@@ -96,6 +122,8 @@ extern "C" {
 #  define NMH_ACC_ALIGN 64
 #elif defined(__BIGGEST_ALIGNMENT__)
 #  define NMH_ACC_ALIGN __BIGGEST_ALIGNMENT__
+#elif defined(__SDCC)
+#  define NMH_ACC_ALIGN 1
 #else
 #  define NMH_ACC_ALIGN 16
 #endif
@@ -120,6 +148,17 @@ NMH_ALIGN(NMH_ACC_ALIGN) static const uint32_t NMH_ACC_INIT[32] = {
 	UINT32_C(0xB8084674), UINT32_C(0xF743248E), UINT32_C(0xE03590E6), UINT32_C(0x813A264C),
 	UINT32_C(0x3C2852BB), UINT32_C(0x91C300CB), UINT32_C(0x88D0658B), UINT32_C(0x1B532EA3),
 };
+
+#if defined(_MSC_VER) && _MSC_VER >= 1914
+#  pragma warning(push)
+#  pragma warning(disable: 5045)
+#endif
+#ifdef __SDCC
+#  define const
+#  pragma save
+#  pragma disable_warning 110
+#  pragma disable_warning 126
+#endif
 
 /* read functions */
 static inline
@@ -168,14 +207,14 @@ NMHASH32_short32(uint32_t const x, uint32_t const seed2, NMH_SHORT32_SEED2 const
 		vx.u32 = x;
 		vx.u32 ^= (vx.u32 << 18) ^ (vx.u32 >> 22);
 		vx.u32 ^= (vx.u32 >> 11) ^ (vx.u32 >> 13);
-		vx.u16[0] *= (uint16_t)__NMH_M1;
+		vx.u16[0] *= (uint16_t)(__NMH_M1 & 0xFFFF);
 		vx.u16[1] *= (uint16_t)(__NMH_M1 >> 16);
 		if (NMH_SHORT32_WITH_SEED2 == withSeed2) {
 			vx.u32 += seed2;
 		}
 		vx.u32 ^= (vx.u32 << 15) ^ ( vx.u32 >> 24);
 		vx.u32 ^= (vx.u32 >> 6) ^ ( vx.u32 >> 21);
-		vx.u16[0] *= (uint16_t)__NMH_M2;
+		vx.u16[0] *= (uint16_t)(__NMH_M2 & 0xFFFF);
 		vx.u16[1] *= (uint16_t)(__NMH_M2 >> 16);
 		vx.u32 ^= (vx.u32 << 7) ^ ( vx.u32 >> 13);
 		vx.u32 ^= (vx.u32 << 15) ^ ( vx.u32 >> 11);
@@ -222,10 +261,10 @@ NMHASH32_avalanche32(uint32_t const x, NMH_AVALANCHE const type)
 	union { uint32_t u32; uint16_t u16[2]; } vx;
 	vx.u32 = x;
 	vx.u32    ^= (vx.u32 >> 8) ^ (vx.u32 >> 21);
-	vx.u16[0] = (uint16_t)(vx.u16[0] * (uint16_t)__NMH_M3);
+	vx.u16[0] = (uint16_t)(vx.u16[0] * (uint16_t)(__NMH_M3 & 0xFFFF));
 	vx.u16[1] = (uint16_t)(vx.u16[1] * (uint16_t)(__NMH_M3 >> 16));
 	vx.u32    ^= (vx.u32 << 12) ^ (vx.u32 >> 7);
-	vx.u16[0] = (uint16_t)(vx.u16[0] * (uint16_t)__NMH_M4);
+	vx.u16[0] = (uint16_t)(vx.u16[0] * (uint16_t)(__NMH_M4 & 0xFFFF));
 	vx.u16[1] = (uint16_t)(vx.u16[1] * (uint16_t)(__NMH_M4 >> 16));
 	if (NMH_AVALANCHE_FULL == type) {
 		return vx.u32 ^ (vx.u32 >> 8) ^ (vx.u32 >> 21);
@@ -321,8 +360,8 @@ NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
 
 		acc = _mm_xor_si128(acc, h0);
-		acc = _mm_add_epi32(acc, _mm_bsrli_si128(acc, 4));
-		acc = _mm_add_epi32(acc, _mm_bsrli_si128(acc, 8));
+		acc = _mm_add_epi32(acc, _mm_srli_si128(acc, 4));
+		acc = _mm_add_epi32(acc, _mm_srli_si128(acc, 8));
 
 		acc = _mm_xor_si128(acc, _mm_setr_epi32((int)((uint32_t)len + seed), 0, 0, 0));
 		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
@@ -397,10 +436,10 @@ void
 NMHASH32_long_round_sse2(uint32_t *const NMH_RESTRICT acc, const uint8_t* const NMH_RESTRICT p, const NMH_AVALANCHE type)
 {
 	typedef __m128i vector_t;
-	const vector_t *const NMH_RESTRICT m1   = (const vector_t * NMH_RESTRICT)__NMH_M3_V;
-	const vector_t *const NMH_RESTRICT m2   = (const vector_t * NMH_RESTRICT)__NMH_M4_V;
-	      vector_t *const              xacc = (      vector_t *             )acc;
-	      vector_t *const              xp   = (      vector_t *             )p;
+	const vector_t *const NMH_RESTRICT m1   = (const vector_t *)__NMH_M3_V;
+	const vector_t *const NMH_RESTRICT m2   = (const vector_t *)__NMH_M4_V;
+	      vector_t *const              xacc = (      vector_t *)acc;
+	      vector_t *const              xp   = (      vector_t *)p;
 	      vector_t                     data[NMH_VECTOR_NB_GROUP];
 	size_t i;
 
@@ -530,17 +569,16 @@ NMHASH32X_avalanche32_m2(uint32_t x)
 
 static inline
 uint32_t
-NMHASH32X_avalanche32_m3(uint32_t x, const uint32_t seed2)
+NMHASH32X_avalanche32_m3(uint32_t x, uint32_t const seed)
 {
-	/* mixer: [16 4c749d4b 14 a8437449 rot:12 4bf49d4b 16] = 0.27840170934551578
-	 */
-	x ^= x >> 16;
-	x *= UINT32_C(0x4C749D4B);
-	x += seed2;
-	x ^= x >> 14;
-	x *= UINT32_C(0xA8437449);
-	x  = x << 12 | x >> 20;
-	x *= UINT32_C(0x4BF49D4B);
+	/* [bdab1ea9 18 a7896a1b 12 83796a2d 16] = 0.092922873297662509 */
+	x ^= seed;
+	x *= UINT32_C(0xbdab1ea9);
+	x += seed << 31 | seed >> 1;
+	x ^= x >> 18;
+	x *= UINT32_C(0xa7896a1b);
+	x ^= x >> 12;
+	x *= UINT32_C(0x83796a2d);
 	x ^= x >> 16;
 	return x;
 }
@@ -611,7 +649,7 @@ NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t const 
 			x.u32 <<= 16;
 			x.u8[NMHASH_LITTLE_ENDIAN ? 0 : 3] = p[len>>1];
 			x.u8[NMHASH_LITTLE_ENDIAN ? 1 : 2] = p[len>>2];
-			return -NMHASH32_short32((NMH_PRIME32_4 + seed) ^ x.u32, (uint32_t)len ^ seed, NMH_SHORT32_WITH_SEED2);
+			return (uint32_t)-(int32_t)NMHASH32_short32((NMH_PRIME32_4 + seed) ^ x.u32, (uint32_t)len ^ seed, NMH_SHORT32_WITH_SEED2);
                 }
 		return NMHASH32_short32(NMH_PRIME32_1 + seed, 0, NMH_SHORT32_WITHOUT_SEED2);
 	}
@@ -623,119 +661,164 @@ NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t const 
 
 static inline
 uint32_t
-NMHASH32X_4to8(const uint8_t* const NMH_RESTRICT p, size_t len, uint32_t const seed)
+NMHASH32X_5to8(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed)
 {
-	/* base mixer: [16 a52fb2cd 15 551e4d49 16] = 0.17162579707098322
-	 * tail mixer: [16 a52fb2cd 15 551e4d49 16 a52fb2cd 17] = 0.023181031813212738
-	 */
+	/* - 5 to 9 bytes
+	 * - mixer: [11049a7d 23 bcccdc7b 12 065e9dad 12] = 0.16577596555667246 */
 
-	uint32_t x = NMH_PRIME32_1 + (uint16_t)seed;
-	uint32_t y = NMH_PRIME32_2 + seed;
-
-	if (NMH_likely(len != 4)) {
-		x ^= NMH_readLE32(p);
-		x ^= x >> 16;
-		x *= UINT32_C(0xA52FB2CD);
-		x ^= x >> 15;
-		x *= UINT32_C(0x551E4D49);
-	}
-
-	y ^= NMH_readLE32(p + len - 4);
-	y ^= y >> 16;
-	y *= UINT32_C(0xA52FB2CD);
-	y ^= y >> 15;
-	y *= UINT32_C(0x551E4D49);
-
-	x += (uint32_t)len;
-	y = y << 3 | y >> (32 - 3);
-	x ^= y;
-
-	x ^= x >> 16;
-	x *= UINT32_C(0xA52FB2CD);
-	x ^= x >> 17;
+	uint32_t       x = NMH_readLE32(p);
+	uint32_t const y = NMH_readLE32(p + len - 4) ^ (NMH_PRIME32_4 + 2 + seed);
+	x += y;
+	x ^= x >> len;
+	x *= 0x11049a7d;
+	x ^= x >> 23;
+	x *= 0xbcccdc7b;
+	x ^= NMH_rotl32(y, 3);
+	x ^= x >> 12;
+	x *= 0x065e9dad;
+	x ^= x >> 12;
 	return x;
 }
 
 static inline
 uint32_t
-NMHASH32X_9to127(const uint8_t* const NMH_RESTRICT p, size_t len, uint32_t const seed)
+NMHASH32X_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed)
 {
 	/* - at least 9 bytes
-	 * - base mixer: [16 a52fb2cd 15 551e4d49 16] = 0.17162579707098322
-	 * - tail mixer: [16 a52fb2cd 15 551e4d49 141cc535 13] = 0.21156257730123229
+	 * - base mixer: [11049a7d 23 bcccdc7b 12 065e9dad 12] = 0.16577596555667246
+	 * - tail mixer: [16 a52fb2cd 15 551e4d49 16] = 0.17162579707098322
 	 */
 
-	uint32_t x = NMH_PRIME32_1 + seed;
-	uint32_t y = NMH_PRIME32_4 + (uint16_t)seed; /* avoid bad seeds */
-	size_t i, r = (len - 1) / 8;
+	uint32_t x = NMH_PRIME32_3;
+	uint32_t y = seed;
+	uint32_t a = NMH_PRIME32_2;
+	uint32_t b = (uint16_t)seed;
+	size_t i, r = (len - 1) / 16;
 
 	for (i = 0; i < r; ++i) {
-		y ^= NMH_readLE32(p + i * 8 + 4);
-		y ^= y >> 16;
-		y *= UINT32_C(0xA52FB2CD);
-		y ^= y >> 15;
-		y *= UINT32_C(0x551E4D49);
+		x ^= NMH_readLE32(p + i * 16 + 0);
+		y ^= NMH_readLE32(p + i * 16 + 4);
+		x ^= y;
+		x *= UINT32_C(0x11049a7d);
+		x ^= x >> 23;
+		x *= UINT32_C(0xbcccdc7b);
+		y  = NMH_rotl32(y, 1);
+		x ^= y;
+		x ^= x >> 12;
+		x *= UINT32_C(0x065e9dad);
+		x ^= x >> 12;
 
-		x ^= NMH_readLE32(p + i * 8);
+		a ^= NMH_readLE32(p + i * 16 + 8);
+		b ^= NMH_readLE32(p + i * 16 + 12);
+		a ^= b;
+		a *= UINT32_C(0x11049a7d);
+		a ^= a >> 23;
+		a *= UINT32_C(0xbcccdc7b);
+		b  = NMH_rotl32(b, 1);
+		a ^= b;
+		a ^= a >> 12;
+		a *= UINT32_C(0x065e9dad);
+		a ^= a >> 12;
+	}
+
+	if (NMH_likely(((uint8_t)len-1) & 8)) {
+		if (NMH_likely(((uint8_t)len-1) & 4)) {
+			a ^= NMH_readLE32(p + r * 16 + 0);
+			b ^= NMH_readLE32(p + r * 16 + 4);
+			a ^= b;
+			a *= UINT32_C(0x11049a7d);
+			a ^= a >> 23;
+			a *= UINT32_C(0xbcccdc7b);
+			a ^= NMH_rotl32(b, 1);
+			a ^= a >> 12;
+			a *= UINT32_C(0x065e9dad);
+		} else {
+			a ^= NMH_readLE32(p + r * 16) + b;
+			a ^= a >> 16;
+			a *= UINT32_C(0xA52FB2CD);
+			a ^= a >> 15;
+			a *= UINT32_C(0x551E4D49);
+		}
+
+		x ^= NMH_readLE32(p + len - 8);
+		y ^= NMH_readLE32(p + len - 4);
+		x ^= y;
+		x *= UINT32_C(0x11049a7d);
+		x ^= x >> 23;
+		x *= UINT32_C(0xbcccdc7b);
+		x ^= NMH_rotl32(y, 1);
+		x ^= x >> 12;
+		x *= UINT32_C(0x065e9dad);
+	} else {
+		if (NMH_likely(((uint8_t)len-1) & 4)) {
+			a ^= NMH_readLE32(p + r * 16) + b;
+			a ^= a >> 16;
+			a *= UINT32_C(0xA52FB2CD);
+			a ^= a >> 15;
+			a *= UINT32_C(0x551E4D49);
+		}
+		x ^= NMH_readLE32(p + len - 4) + y;
 		x ^= x >> 16;
 		x *= UINT32_C(0xA52FB2CD);
 		x ^= x >> 15;
 		x *= UINT32_C(0x551E4D49);
 	}
 
-	if (NMH_likely(((uint8_t)len-1) & 4)) {
-		x ^= NMH_readLE32(p + r * 8);
-		x ^= x >> 16;
-		x *= UINT32_C(0xA52FB2CD);
-		x ^= x >> 15;
-		x *= UINT32_C(0x551E4D49);
-	}
-
-	y ^= NMH_readLE32(p + len - 4);
-	y ^= y >> 16;
-	y *= UINT32_C(0xA52FB2CD);
-	y ^= y >> 15;
-	y *= UINT32_C(0x551E4D49);
-
-	x += (uint32_t)len;
-	y  = y << 3 | y >> (32 - 3); /* rotate one lane to pass Diff test */
-	x ^= y;
-
+	x ^= (uint32_t)len;
+	x ^= NMH_rotl32(a, 3); /* rotate one lane to pass Diff test */
+	x ^= x >> 14;
 	x *= UINT32_C(0x141CC535);
-	x ^= x >> 13;
+
 	return x;
 }
 
 /* use 32*32->32 multiplication for short hash */
 static inline
 uint32_t
-NMHASH32X(const void* const NMH_RESTRICT input, size_t const len, uint32_t const seed)
+NMHASH32X(const void* const NMH_RESTRICT input, size_t const len, uint32_t seed)
 {
 	const uint8_t *const p = (const uint8_t *)input;
 	if (NMH_likely(len <= 8)) {
-		if (NMH_likely(len >= 4)) {
-			return NMHASH32X_4to8(p, len, seed);
+		if (NMH_likely(len > 4)) {
+			return NMHASH32X_5to8(p, len, seed);
+		} else {
+			/* 0-4 bytes */
+			union { uint32_t u32; uint16_t u16[2]; uint8_t u8[4]; } data;
+			switch (len) {
+				case 0: seed += NMH_PRIME32_2;
+					data.u32 = 0;
+					break;
+				case 1: seed += NMH_PRIME32_2 + (UINT32_C(1) << 24) + (1 << 1);
+					data.u32 = p[0];
+					break;
+				case 2: seed += NMH_PRIME32_2 + (UINT32_C(2) << 24) + (2 << 1);
+					data.u32 = NMH_readLE16(p);
+					break;
+				case 3: seed += NMH_PRIME32_2 + (UINT32_C(3) << 24) + (3 << 1);
+					data.u16[1] = p[2];
+					data.u16[0] = NMH_readLE16(p);
+					break;
+				case 4: seed += NMH_PRIME32_1;
+					data.u32 = NMH_readLE32(p);
+					break;
+				default: return 0;
+			}
+			return NMHASH32X_avalanche32_m3(data.u32, seed);
 		}
-
-		/* 0-3 bytes */
-		uint32_t const seed2 = seed + (uint32_t)len;
-		union { uint32_t u32; uint16_t u16[2]; uint8_t u8[4]; } x;
-		x.u32 = (uint32_t)len << 16;
-		switch (len) {
-			case 0: return NMHASH32X_avalanche32_m2(NMH_PRIME32_1 ^ seed);
-			case 1: x.u8[NMHASH_LITTLE_ENDIAN ? 1 : 2] = p[0];
-				break;
-			case 3: x.u8[NMHASH_LITTLE_ENDIAN ? 3 : 0] = p[2]; /*@fallthrough@*/
-			case 2: x.u16[NMHASH_LITTLE_ENDIAN ? 0 : 1] = NMH_readLE16(p);
-
-		}
-		return NMHASH32X_avalanche32_m3((NMH_PRIME32_4 + seed2) ^ x.u32, seed2);
 	}
 	if (NMH_likely(len < 128)) {
 		return NMHASH32X_9to127(p, len, seed);
 	}
 	return NMHASH32_long(p, len, seed, NMH_AVALANCHE_FULL);
 }
+
+#if defined(_MSC_VER) && _MSC_VER >= 1914
+#  pragma warning(pop)
+#endif
+#ifdef __SDCC
+#  pragma restore
+#  undef const
+#endif
 
 #endif /* _nmhash_h_ */
 
