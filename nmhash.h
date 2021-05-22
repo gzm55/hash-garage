@@ -283,6 +283,7 @@ uint32_t
 NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed, NMH_AVALANCHE const type)
 {
 	/* base mixer: [a9f36a97 -12 -5 8ac7bbe5 -19 14 ea6b84ef -5 -11 ] = 1.5157011382153725 */
+	uint32_t result = 0;
 #	if NMH_VECTOR == NMH_SCALAR
 	{
 		union { uint32_t u32; uint16_t u16[2]; } x[4], y[4];
@@ -370,7 +371,7 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		x[0].u16[1] *= (uint16_t)(__NMH_M6V2 >> 16);
 		x[0].u32 ^= (x[0].u32 >> 5) ^ (x[0].u32 >> 10);
 
-		return x[0].u32;
+		result = x[0].u32;
 	}
 #	else /* at least NMH_SSE2 */
 	{
@@ -381,6 +382,7 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		__m128i const m3 = _mm_set1_epi32((int)__NMH_M6V2);
 		__m128i       x = h0;
 		__m128i       y = sl;
+		const uint32_t *const px = (const uint32_t*)&x;
 
 		if (NMH_AVALANCHE_FULL == type) {
 			/* 32 to 127 bytes */
@@ -426,10 +428,10 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		x = _mm_mullo_epi16(x, m3);
 		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 10));
 
-		const uint32_t *const result = (const uint32_t*)&x;
-		return *result;
+		result = *px;
 	}
 #	endif
+	return *&result;
 }
 
 #undef __NMH_M4V2
