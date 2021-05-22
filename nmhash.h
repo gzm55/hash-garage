@@ -1,8 +1,8 @@
 /*
  * verification:
  * NMHASH32:
- *   rurban/smhasher: 0x0DC5C2DC
- *   demerphq/smhasher: 0xDF3272CF
+ *   rurban/smhasher: 0xDADAD92D
+ *   demerphq/smhasher: 0x740DA204
  * NMHASH32X:
  *   rurban/smhasher: 0xB3AD8BB9
  *   demerphq/smhasher: 0xBCCA21BD
@@ -191,61 +191,56 @@ NMH_readLE16(const void *const p)
 #	endif
 }
 
-typedef enum { NMH_SHORT32_WITHOUT_SEED2=0, NMH_SHORT32_WITH_SEED2=1 } NMH_SHORT32_SEED2;
-
 static inline
 uint32_t
-NMHASH32_short32(uint32_t const x, uint32_t const seed2, NMH_SHORT32_SEED2 const withSeed2)
+NMHASH32_0to8(uint32_t const x, uint32_t const seed2)
 {
-	/* score = 1.8481760596580992 */
-#	define __NMH_M1 UINT32_C(0x3E550CF1)
-#	define __NMH_M2 UINT32_C(0x9E1B7E49)
+	/* base mixer: [-6 -12 776bf593 -19 11 3fb39c65 -15 -9 e9139917 -11 16] = 0.027071104091278835 */
+#	define __NMH_M1 UINT32_C(0x776BF593)
+#	define __NMH_M2 UINT32_C(0x3FB39C65)
+#	define __NMH_M3V2 UINT32_C(0xE9139917)
 
 #	if NMH_VECTOR == NMH_SCALAR
 	{
 		union { uint32_t u32; uint16_t u16[2]; } vx;
 		vx.u32 = x;
-		vx.u32 ^= (vx.u32 << 18) ^ (vx.u32 >> 22);
-		vx.u32 ^= (vx.u32 >> 11) ^ (vx.u32 >> 13);
+		vx.u32 ^= (vx.u32 >> 12) ^ (vx.u32 >> 6);
 		vx.u16[0] *= (uint16_t)(__NMH_M1 & 0xFFFF);
 		vx.u16[1] *= (uint16_t)(__NMH_M1 >> 16);
-		if (NMH_SHORT32_WITH_SEED2 == withSeed2) {
-			vx.u32 += seed2;
-		}
-		vx.u32 ^= (vx.u32 << 15) ^ ( vx.u32 >> 24);
-		vx.u32 ^= (vx.u32 >> 6) ^ ( vx.u32 >> 21);
+		vx.u32 ^= (vx.u32 << 11) ^ ( vx.u32 >> 19);
 		vx.u16[0] *= (uint16_t)(__NMH_M2 & 0xFFFF);
 		vx.u16[1] *= (uint16_t)(__NMH_M2 >> 16);
-		vx.u32 ^= (vx.u32 << 7) ^ ( vx.u32 >> 13);
-		vx.u32 ^= (vx.u32 << 15) ^ ( vx.u32 >> 11);
+		vx.u32 ^= seed2;
+		vx.u32 ^= (vx.u32 >> 15) ^ ( vx.u32 >> 9);
+		vx.u16[0] *= (uint16_t)(__NMH_M3V2 & 0xFFFF);
+		vx.u16[1] *= (uint16_t)(__NMH_M3V2 >> 16);
+		vx.u32 ^= (vx.u32 << 16) ^ ( vx.u32 >> 11);
 		return vx.u32;
 	}
 #	else /* at least NMH_SSE2 */
 	{
 		__m128i hv = _mm_setr_epi32((int)x, 0, 0, 0);
+		const __m128i sv = _mm_setr_epi32((int)seed2, 0, 0, 0);
+		const uint32_t *const result = (const uint32_t*)&hv;
 
-		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 18)), _mm_srli_epi32(hv, 22));
-		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_srli_epi32(hv, 11)), _mm_srli_epi32(hv, 13));
+		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_srli_epi32(hv, 12)), _mm_srli_epi32(hv, 6));
 		hv = _mm_mullo_epi16(hv, _mm_setr_epi32((int)__NMH_M1, 0, 0, 0));
-
-		if (NMH_SHORT32_WITH_SEED2 == withSeed2) {
-			hv = _mm_add_epi32(hv, _mm_setr_epi32((int)seed2, 0, 0, 0));
-		}
-
-		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 15)), _mm_srli_epi32(hv, 24));
-		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_srli_epi32(hv, 6)), _mm_srli_epi32(hv, 21));
+		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 11)), _mm_srli_epi32(hv, 19));
 		hv = _mm_mullo_epi16(hv, _mm_setr_epi32((int)__NMH_M2, 0, 0, 0));
 
-		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 7)), _mm_srli_epi32(hv, 13));
-		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 15)), _mm_srli_epi32(hv, 11));
+		hv = _mm_xor_si128(hv, sv);
 
-		const uint32_t *const result = (const uint32_t*)&hv;
+		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_srli_epi32(hv, 15)), _mm_srli_epi32(hv, 9));
+		hv = _mm_mullo_epi16(hv, _mm_setr_epi32((int)__NMH_M3V2, 0, 0, 0));
+		hv = _mm_xor_si128(_mm_xor_si128(hv, _mm_slli_epi32(hv, 16)), _mm_srli_epi32(hv, 11));
+
 		return *result;
 	}
 #	endif
 
 #	undef __NMH_M1
 #	undef __NMH_M2
+#	undef __NMH_M3V2
 }
 
 typedef enum { NMH_AVALANCHE_FULL=0, NMH_AVALANCHE_INNER=1 } NMH_AVALANCHE;
@@ -279,102 +274,167 @@ NMHASH32_mix32(uint32_t const h, uint32_t const x, NMH_AVALANCHE const type)
         return NMHASH32_avalanche32(h ^ x, type);
 }
 
+#define __NMH_M4V2 UINT32_C(0xA9F36A97)
+#define __NMH_M5V2 UINT32_C(0x8AC7BBE5)
+#define __NMH_M6V2 UINT32_C(0xEA6B84EF)
+
 static inline
 uint32_t
-NMHASH32_5to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed, NMH_AVALANCHE const type)
+NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed, NMH_AVALANCHE const type)
 {
+	/* base mixer: [a9f36a97 -12 -5 8ac7bbe5 -19 14 ea6b84ef -5 -11 ] = 1.5157011382153725 */
 #	if NMH_VECTOR == NMH_SCALAR
 	{
-		uint32_t a = NMH_PRIME32_1 + seed;
-		uint32_t b = NMH_PRIME32_2 + seed;
-		uint32_t c = NMH_PRIME32_3 + seed;
-		uint32_t d = NMH_PRIME32_4 + seed;
+		union { uint32_t u32; uint16_t u16[2]; } x[4], y[4];
+		uint32_t const sl = seed + (uint32_t)len;
+		size_t j;
+		x[0].u32 = NMH_PRIME32_1;
+		x[1].u32 = NMH_PRIME32_2;
+		x[2].u32 = NMH_PRIME32_3;
+		x[3].u32 = NMH_PRIME32_4;
+		for (j = 0; j < 4; ++j) y[j].u32 = sl;
 
 		if (NMH_AVALANCHE_FULL == type) {
-			/* 17 to 127 bytes */
-			int const nbRounds = (int)(len - 1) / 16;
-			int i;
-			for (i = 0; i < nbRounds; ++i) {
-				a = NMHASH32_mix32(a, NMH_readLE32(p + i * 16 + 0), NMH_AVALANCHE_INNER);
-				b = NMHASH32_mix32(b, NMH_readLE32(p + i * 16 + 4), NMH_AVALANCHE_INNER);
-				c = NMHASH32_mix32(c, NMH_readLE32(p + i * 16 + 8), NMH_AVALANCHE_INNER);
-				d = NMHASH32_mix32(d, NMH_readLE32(p + i * 16 + 12), NMH_AVALANCHE_INNER);
+			/* 32 to 127 bytes */
+			size_t const r = (len - 1) / 32;
+			size_t i;
+			for (i = 0; i < r; ++i) {
+				for (j = 0; j < 4; ++j) x[j].u32 ^= NMH_readLE32(p + i * 32 + j * 4);
+				for (j = 0; j < 4; ++j) y[j].u32 ^= NMH_readLE32(p + i * 32 + j * 4 + 16);
+				for (j = 0; j < 4; ++j) x[j].u32 += y[j].u32;
+
+				for (j = 0; j < 4; ++j) {
+					x[j].u16[0] *= (uint16_t)(__NMH_M4V2 & 0xFFFF);
+					x[j].u16[1] *= (uint16_t)(__NMH_M4V2 >> 16);
+				}
+				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 5) ^ (x[j].u32 >> 12);
+				for (j = 0; j < 4; ++j) {
+					x[j].u16[0] *= (uint16_t)(__NMH_M5V2 & 0xFFFF);
+					x[j].u16[1] *= (uint16_t)(__NMH_M5V2 >> 16);
+				}
+
+				for (j = 0; j < 4; ++j) x[j].u32 ^= y[j].u32;
+
+				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 << 14) ^ (x[j].u32 >> 19);
+				for (j = 0; j < 4; ++j) {
+					x[j].u16[0] *= (uint16_t)(__NMH_M6V2 & 0xFFFF);
+					x[j].u16[1] *= (uint16_t)(__NMH_M6V2 >> 16);
+				}
+				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 5) ^ (x[j].u32 >> 11);
 			}
-			a = NMHASH32_mix32(a, NMH_readLE32(p + len - 16 + 0), NMH_AVALANCHE_FULL);
-			b = NMHASH32_mix32(b, NMH_readLE32(p + len - 16 + 4), NMH_AVALANCHE_FULL);
-			c = NMHASH32_mix32(c, NMH_readLE32(p + len - 16 + 8), NMH_AVALANCHE_FULL);
-			d = NMHASH32_mix32(d, NMH_readLE32(p + len - 16 + 12), NMH_AVALANCHE_FULL);
+			for (j = 0; j < 4; ++j) x[j].u32 ^= NMH_readLE32(p + len - 32 + j * 4);
+			for (j = 0; j < 4; ++j) y[j].u32 ^= NMH_readLE32(p + len - 16 + j * 4);
 		} else {
-			/* 5 to 16 bytes */
-			a = NMHASH32_mix32(a, NMH_readLE32(p), NMH_AVALANCHE_FULL);
-			b = NMHASH32_mix32(b, NMH_readLE32(p + ((len>>3)<<2)), NMH_AVALANCHE_FULL);
-			c = NMHASH32_mix32(c, NMH_readLE32(p + len - 4), NMH_AVALANCHE_FULL);
-			d = NMHASH32_mix32(d, NMH_readLE32(p + len - 4 - ((len>>3)<<2)), NMH_AVALANCHE_FULL);
+			/* 9 to 32 bytes */
+			x[0].u32 ^= NMH_readLE32(p);
+			x[1].u32 ^= NMH_readLE32(p + ((len>>4)<<3));
+			x[2].u32 ^= NMH_readLE32(p + len - 8);
+			x[3].u32 ^= NMH_readLE32(p + len - 8 - ((len>>4)<<3));
+			y[0].u32 ^= NMH_readLE32(p + 4);
+			y[1].u32 ^= NMH_readLE32(p + ((len>>4)<<3) + 4);
+			y[2].u32 ^= NMH_readLE32(p + len - 8 + 4);
+			y[3].u32 ^= NMH_readLE32(p + len - 8 - ((len>>4)<<3) + 4);
 		}
 
-		a ^= NMH_PRIME32_1;
-		b ^= NMH_PRIME32_2;
-		c ^= NMH_PRIME32_3;
-		d ^= NMH_PRIME32_4;
+		for (j = 0; j < 4; ++j) x[j].u32 += y[j].u32;
+		for (j = 0; j < 4; ++j) y[j].u32 ^= (y[j].u32 << 16) ^ (y[j].u32 >> 9);
 
-		return NMHASH32_mix32(a + b + c + d, (uint32_t)len + seed, NMH_AVALANCHE_FULL);
+		for (j = 0; j < 4; ++j) {
+			x[j].u16[0] *= (uint16_t)(__NMH_M4V2 & 0xFFFF);
+			x[j].u16[1] *= (uint16_t)(__NMH_M4V2 >> 16);
+		}
+		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 5) ^ (x[j].u32 >> 12);
+		for (j = 0; j < 4; ++j) {
+			x[j].u16[0] *= (uint16_t)(__NMH_M5V2 & 0xFFFF);
+			x[j].u16[1] *= (uint16_t)(__NMH_M5V2 >> 16);
+		}
+
+		for (j = 0; j < 4; ++j) x[j].u32 ^= y[j].u32;
+
+		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 << 14) ^ (x[j].u32 >> 19);
+		for (j = 0; j < 4; ++j) {
+			x[j].u16[0] *= (uint16_t)(__NMH_M6V2 & 0xFFFF);
+			x[j].u16[1] *= (uint16_t)(__NMH_M6V2 >> 16);
+		}
+		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 5) ^ (x[j].u32 >> 11);
+
+		x[0].u32 ^= NMH_PRIME32_1;
+		x[1].u32 ^= NMH_PRIME32_2;
+		x[2].u32 ^= NMH_PRIME32_3;
+		x[3].u32 ^= NMH_PRIME32_4;
+
+		for (j = 1; j < 4; ++j) x[0].u32 += x[j].u32;
+
+		x[0].u32 ^= sl << 1;
+		x[0].u16[0] *= (uint16_t)(__NMH_M6V2 & 0xFFFF);
+		x[0].u16[1] *= (uint16_t)(__NMH_M6V2 >> 16);
+		x[0].u32 ^= (x[0].u32 >> 5) ^ (x[0].u32 >> 10);
+
+		return x[0].u32;
 	}
 #	else /* at least NMH_SSE2 */
 	{
 		__m128i const h0 = _mm_setr_epi32((int)NMH_PRIME32_1, (int)NMH_PRIME32_2, (int)NMH_PRIME32_3, (int)NMH_PRIME32_4);
-		__m128i const m1 = _mm_set1_epi32((int)__NMH_M3);
-		__m128i const m2 = _mm_set1_epi32((int)__NMH_M4);
-
-		__m128i       acc  = _mm_add_epi32(h0, _mm_set1_epi32((int)seed));
-		__m128i       data;
+		__m128i const sl = _mm_set1_epi32((int)seed + (int)len);
+		__m128i const m1 = _mm_set1_epi32((int)__NMH_M4V2);
+		__m128i const m2 = _mm_set1_epi32((int)__NMH_M5V2);
+		__m128i const m3 = _mm_set1_epi32((int)__NMH_M6V2);
+		__m128i       x = h0;
+		__m128i       y = sl;
 
 		if (NMH_AVALANCHE_FULL == type) {
-			/* 17 to 127 bytes */
-			int const nbRounds = (int)(len - 1) / 16;
-			int i;
-			for (i = 0; i < nbRounds; ++i) {
-				data = _mm_loadu_si128((const __m128i *)(p + i * 16));
-				acc = _mm_xor_si128(acc, data);
-				acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
-				acc = _mm_mullo_epi16(acc, m1);
-				acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_slli_epi32(acc, 12)), _mm_srli_epi32(acc, 7));
-				acc = _mm_mullo_epi16(acc, m2);
+			/* 32 to 127 bytes */
+			size_t const r = (len - 1) / 32;
+			size_t i;
+			for (i = 0; i < r; ++i) {
+				x = _mm_xor_si128(x, _mm_loadu_si128((const __m128i *)(p + i * 32)));
+				y = _mm_xor_si128(y, _mm_loadu_si128((const __m128i *)(p + i * 32 + 16)));
+				x = _mm_add_epi32(x, y);
+				x = _mm_mullo_epi16(x, m1);
+				x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 12));
+				x = _mm_mullo_epi16(x, m2);
+				x = _mm_xor_si128(x, y);
+				x = _mm_xor_si128(_mm_xor_si128(x, _mm_slli_epi32(x, 14)), _mm_srli_epi32(x, 19));
+				x = _mm_mullo_epi16(x, m3);
+				x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 11));
 			}
-
-			data = _mm_loadu_si128((const __m128i *)(p + len - 16));
+			x = _mm_xor_si128(x, _mm_loadu_si128((const __m128i *)(p + len - 32)));
+			y = _mm_xor_si128(y, _mm_loadu_si128((const __m128i *)(p + len - 16)));
 		} else {
-			/* 5 to 16 bytes */
-			data = _mm_setr_epi32(
-					(int)NMH_readLE32(p),
-					(int)NMH_readLE32(p + ((len>>3)<<2)),
-					(int)NMH_readLE32(p + len - 4),
-					(int)NMH_readLE32(p + len - 4 - ((len>>3)<<2)));
+			/* 9 to 32 bytes */
+			x = _mm_xor_si128(x, _mm_setr_epi32((int)NMH_readLE32(p), (int)NMH_readLE32(p + ((len>>4)<<3)), (int)NMH_readLE32(p + len - 8), (int)NMH_readLE32(p + len - 8 - ((len>>4)<<3))));
+			y = _mm_xor_si128(y, _mm_setr_epi32((int)NMH_readLE32(p + 4), (int)NMH_readLE32(p + ((len>>4)<<3) + 4), (int)NMH_readLE32(p + len - 8 + 4), (int)NMH_readLE32(p + len - 8 - ((len>>4)<<3) + 4)));
 		}
 
+		x = _mm_add_epi32(x, y);
 
-		acc = _mm_xor_si128(acc, data);
-		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
-		acc = _mm_mullo_epi16(acc, m1);
-		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_slli_epi32(acc, 12)), _mm_srli_epi32(acc, 7));
-		acc = _mm_mullo_epi16(acc, m2);
-		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
+		y = _mm_xor_si128(_mm_xor_si128(y, _mm_slli_epi32(y, 16)), _mm_srli_epi32(y, 9));
 
-		acc = _mm_xor_si128(acc, h0);
-		acc = _mm_add_epi32(acc, _mm_srli_si128(acc, 4));
-		acc = _mm_add_epi32(acc, _mm_srli_si128(acc, 8));
+		x = _mm_mullo_epi16(x, m1);
+		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 12));
+		x = _mm_mullo_epi16(x, m2);
+		x = _mm_xor_si128(x, y);
+		x = _mm_xor_si128(_mm_xor_si128(x, _mm_slli_epi32(x, 14)), _mm_srli_epi32(x, 19));
+		x = _mm_mullo_epi16(x, m3);
+		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 11));
 
-		acc = _mm_xor_si128(acc, _mm_setr_epi32((int)((uint32_t)len + seed), 0, 0, 0));
-		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
-		acc = _mm_mullo_epi16(acc, m1);
-		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_slli_epi32(acc, 12)), _mm_srli_epi32(acc, 7));
-		acc = _mm_mullo_epi16(acc, m2);
-		acc = _mm_xor_si128(_mm_xor_si128(acc, _mm_srli_epi32(acc, 8)), _mm_srli_epi32(acc, 21));
+		x = _mm_xor_si128(x, h0);
+		x = _mm_add_epi32(x, _mm_srli_si128(x, 4));
+		x = _mm_add_epi32(x, _mm_srli_si128(x, 8));
 
-		const uint32_t *const result = (const uint32_t*)&acc;
+		x = _mm_xor_si128(x, _mm_slli_epi32(sl, 1));
+		x = _mm_mullo_epi16(x, m3);
+		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 10));
+
+		const uint32_t *const result = (const uint32_t*)&x;
 		return *result;
 	}
 #	endif
 }
+
+#undef __NMH_M4V2
+#undef __NMH_M5V2
+#undef __NMH_M6V2
 
 NMH_ALIGN(NMH_ACC_ALIGN) static const uint32_t __NMH_M3_V[16] = {
 	__NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3, __NMH_M3,
@@ -635,26 +695,45 @@ NMHASH32_long(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t co
 
 static inline
 uint32_t
-NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t const seed)
+NMHASH32(const void* const NMH_RESTRICT input, size_t const len, uint32_t seed)
 {
 	const uint8_t *const p = (const uint8_t *)input;
-	if (NMH_likely(len <= 16)) {
-		if(NMH_likely(len > 4)) {
-			return NMHASH32_5to127(p, len, seed, NMH_AVALANCHE_INNER);
+	if (NMH_likely(len <= 32)) {
+		if(NMH_likely(len > 8)) {
+			return NMHASH32_9to127(p, len, seed, NMH_AVALANCHE_INNER);
 		}
-		if (NMH_likely(len > 0)) {
-			union { uint32_t u32; uint8_t u8[4]; } x;
-			x.u32 = p[0];
-			x.u8[NMHASH_LITTLE_ENDIAN ? 1 : 2] = p[len-1];
-			x.u32 <<= 16;
-			x.u8[NMHASH_LITTLE_ENDIAN ? 0 : 3] = p[len>>1];
-			x.u8[NMHASH_LITTLE_ENDIAN ? 1 : 2] = p[len>>2];
-			return (uint32_t)-(int32_t)NMHASH32_short32((NMH_PRIME32_4 + seed) ^ x.u32, (uint32_t)len ^ seed, NMH_SHORT32_WITH_SEED2);
-                }
-		return NMHASH32_short32(NMH_PRIME32_1 + seed, 0, NMH_SHORT32_WITHOUT_SEED2);
+		if(NMH_likely(len > 4)) {
+			uint32_t x = NMH_readLE32(p);
+			uint32_t y = NMH_readLE32(p + len - 4) ^ (NMH_PRIME32_4 + 2 + seed);
+			x += y;
+			x ^= x << (len + 7);
+			return NMHASH32_0to8(x, NMH_rotl32(y, 5));
+		} else {
+			union { uint32_t u32; uint16_t u16[2]; uint8_t u8[4]; } data;
+			switch (len) {
+				case 0: seed += NMH_PRIME32_2;
+					data.u32 = 0;
+					break;
+				case 1: seed += NMH_PRIME32_2 + (UINT32_C(1) << 24) + (1 << 1);
+					data.u32 = p[0];
+					break;
+				case 2: seed += NMH_PRIME32_2 + (UINT32_C(2) << 24) + (2 << 1);
+					data.u32 = NMH_readLE16(p);
+					break;
+				case 3: seed += NMH_PRIME32_2 + (UINT32_C(3) << 24) + (3 << 1);
+					data.u16[1] = p[2];
+					data.u16[0] = NMH_readLE16(p);
+					break;
+				case 4: seed += NMH_PRIME32_3;
+					data.u32 = NMH_readLE32(p);
+					break;
+				default: return 0;
+			}
+			return NMHASH32_0to8(data.u32 + seed, NMH_rotl32(seed, 5));
+		}
 	}
 	if (NMH_likely(len < 128)) {
-		return NMHASH32_5to127(p, len, seed, NMH_AVALANCHE_FULL);
+		return NMHASH32_9to127(p, len, seed, NMH_AVALANCHE_FULL);
 	}
 	return NMHASH32_long(p, len, seed, NMH_AVALANCHE_INNER);
 }
