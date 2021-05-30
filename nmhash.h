@@ -1,8 +1,8 @@
 /*
  * verification:
  * NMHASH32:
- *   rurban/smhasher: 0xDADAD92D
- *   demerphq/smhasher: 0x740DA204
+ *   rurban/smhasher: 0x9B2F78A6
+ *   demerphq/smhasher: 0x7E105800
  * NMHASH32X:
  *   rurban/smhasher: 0xB3AD8BB9
  *   demerphq/smhasher: 0xBCCA21BD
@@ -274,15 +274,15 @@ NMHASH32_mix32(uint32_t const h, uint32_t const x, NMH_AVALANCHE const type)
         return NMHASH32_avalanche32(h ^ x, type);
 }
 
-#define __NMH_M4V2 UINT32_C(0xA9F36A97)
-#define __NMH_M5V2 UINT32_C(0x8AC7BBE5)
-#define __NMH_M6V2 UINT32_C(0xEA6B84EF)
+#define __NMH_M4V2 UINT32_C(0xF0D9649B)
+#define __NMH_M5V2 UINT32_C(0x29A7935D)
+#define __NMH_M6V2 UINT32_C(0x55D35831)
 
 static inline
 uint32_t
 NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t const seed, NMH_AVALANCHE const type)
 {
-	/* base mixer: [a9f36a97 -12 -5 8ac7bbe5 -19 14 ea6b84ef -5 -11 ] = 1.5157011382153725 */
+	/* base mixer: [f0d9649b  5 -13 29a7935d -9 11 55d35831 -20 -10 ] = 0.93495901789135362 */
 	uint32_t result = 0;
 #	if NMH_VECTOR == NMH_SCALAR
 	{
@@ -308,7 +308,7 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 					x[j].u16[0] *= (uint16_t)(__NMH_M4V2 & 0xFFFF);
 					x[j].u16[1] *= (uint16_t)(__NMH_M4V2 >> 16);
 				}
-				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 5) ^ (x[j].u32 >> 12);
+				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 << 5) ^ (x[j].u32 >> 13);
 				for (j = 0; j < 4; ++j) {
 					x[j].u16[0] *= (uint16_t)(__NMH_M5V2 & 0xFFFF);
 					x[j].u16[1] *= (uint16_t)(__NMH_M5V2 >> 16);
@@ -316,12 +316,12 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 
 				for (j = 0; j < 4; ++j) x[j].u32 ^= y[j].u32;
 
-				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 << 14) ^ (x[j].u32 >> 19);
+				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 << 11) ^ (x[j].u32 >> 9);
 				for (j = 0; j < 4; ++j) {
 					x[j].u16[0] *= (uint16_t)(__NMH_M6V2 & 0xFFFF);
 					x[j].u16[1] *= (uint16_t)(__NMH_M6V2 >> 16);
 				}
-				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 5) ^ (x[j].u32 >> 11);
+				for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 10) ^ (x[j].u32 >> 20);
 			}
 			for (j = 0; j < 4; ++j) x[j].u32 ^= NMH_readLE32(p + len - 32 + j * 4);
 			for (j = 0; j < 4; ++j) y[j].u32 ^= NMH_readLE32(p + len - 16 + j * 4);
@@ -338,13 +338,13 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 		}
 
 		for (j = 0; j < 4; ++j) x[j].u32 += y[j].u32;
-		for (j = 0; j < 4; ++j) y[j].u32 ^= (y[j].u32 << 16) ^ (y[j].u32 >> 9);
+		for (j = 0; j < 4; ++j) y[j].u32 ^= (y[j].u32 << 17) ^ (y[j].u32 >> 6);
 
 		for (j = 0; j < 4; ++j) {
 			x[j].u16[0] *= (uint16_t)(__NMH_M4V2 & 0xFFFF);
 			x[j].u16[1] *= (uint16_t)(__NMH_M4V2 >> 16);
 		}
-		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 5) ^ (x[j].u32 >> 12);
+		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 << 5) ^ (x[j].u32 >> 13);
 		for (j = 0; j < 4; ++j) {
 			x[j].u16[0] *= (uint16_t)(__NMH_M5V2 & 0xFFFF);
 			x[j].u16[1] *= (uint16_t)(__NMH_M5V2 >> 16);
@@ -352,12 +352,12 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 
 		for (j = 0; j < 4; ++j) x[j].u32 ^= y[j].u32;
 
-		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 << 14) ^ (x[j].u32 >> 19);
+		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 << 11) ^ (x[j].u32 >> 9);
 		for (j = 0; j < 4; ++j) {
 			x[j].u16[0] *= (uint16_t)(__NMH_M6V2 & 0xFFFF);
 			x[j].u16[1] *= (uint16_t)(__NMH_M6V2 >> 16);
 		}
-		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 5) ^ (x[j].u32 >> 11);
+		for (j = 0; j < 4; ++j) x[j].u32 ^= (x[j].u32 >> 10) ^ (x[j].u32 >> 20);
 
 		x[0].u32 ^= NMH_PRIME32_1;
 		x[1].u32 ^= NMH_PRIME32_2;
@@ -366,10 +366,10 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 
 		for (j = 1; j < 4; ++j) x[0].u32 += x[j].u32;
 
-		x[0].u32 ^= sl << 1;
+		x[0].u32 ^= sl + (sl >> 5);
 		x[0].u16[0] *= (uint16_t)(__NMH_M6V2 & 0xFFFF);
 		x[0].u16[1] *= (uint16_t)(__NMH_M6V2 >> 16);
-		x[0].u32 ^= (x[0].u32 >> 5) ^ (x[0].u32 >> 10);
+		x[0].u32 ^= (x[0].u32 >> 10) ^ (x[0].u32 >> 20);
 
 		result = x[0].u32;
 	}
@@ -393,12 +393,12 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 				y = _mm_xor_si128(y, _mm_loadu_si128((const __m128i *)(p + i * 32 + 16)));
 				x = _mm_add_epi32(x, y);
 				x = _mm_mullo_epi16(x, m1);
-				x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 12));
+				x = _mm_xor_si128(_mm_xor_si128(x, _mm_slli_epi32(x, 5)), _mm_srli_epi32(x, 13));
 				x = _mm_mullo_epi16(x, m2);
 				x = _mm_xor_si128(x, y);
-				x = _mm_xor_si128(_mm_xor_si128(x, _mm_slli_epi32(x, 14)), _mm_srli_epi32(x, 19));
+				x = _mm_xor_si128(_mm_xor_si128(x, _mm_slli_epi32(x, 11)), _mm_srli_epi32(x, 9));
 				x = _mm_mullo_epi16(x, m3);
-				x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 11));
+				x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 10)), _mm_srli_epi32(x, 20));
 			}
 			x = _mm_xor_si128(x, _mm_loadu_si128((const __m128i *)(p + len - 32)));
 			y = _mm_xor_si128(y, _mm_loadu_si128((const __m128i *)(p + len - 16)));
@@ -410,23 +410,23 @@ NMHASH32_9to127(const uint8_t* const NMH_RESTRICT p, size_t const len, uint32_t 
 
 		x = _mm_add_epi32(x, y);
 
-		y = _mm_xor_si128(_mm_xor_si128(y, _mm_slli_epi32(y, 16)), _mm_srli_epi32(y, 9));
+		y = _mm_xor_si128(_mm_xor_si128(y, _mm_slli_epi32(y, 17)), _mm_srli_epi32(y, 6));
 
 		x = _mm_mullo_epi16(x, m1);
-		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 12));
+		x = _mm_xor_si128(_mm_xor_si128(x, _mm_slli_epi32(x, 5)), _mm_srli_epi32(x, 13));
 		x = _mm_mullo_epi16(x, m2);
 		x = _mm_xor_si128(x, y);
-		x = _mm_xor_si128(_mm_xor_si128(x, _mm_slli_epi32(x, 14)), _mm_srli_epi32(x, 19));
+		x = _mm_xor_si128(_mm_xor_si128(x, _mm_slli_epi32(x, 11)), _mm_srli_epi32(x, 9));
 		x = _mm_mullo_epi16(x, m3);
-		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 11));
+		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 10)), _mm_srli_epi32(x, 20));
 
 		x = _mm_xor_si128(x, h0);
 		x = _mm_add_epi32(x, _mm_srli_si128(x, 4));
 		x = _mm_add_epi32(x, _mm_srli_si128(x, 8));
 
-		x = _mm_xor_si128(x, _mm_slli_epi32(sl, 1));
+		x = _mm_xor_si128(x, _mm_add_epi32(sl, _mm_srli_epi32(sl, 5)));
 		x = _mm_mullo_epi16(x, m3);
-		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 5)), _mm_srli_epi32(x, 10));
+		x = _mm_xor_si128(_mm_xor_si128(x, _mm_srli_epi32(x, 10)), _mm_srli_epi32(x, 20));
 
 		result = *px;
 	}
