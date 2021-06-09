@@ -15,7 +15,7 @@ extern "C" {
 #ifndef _nmhash_h_
 #define _nmhash_h_
 
-#define NMH_VERSION 2-dev
+#define NMH_VERSION 2
 
 #ifdef _MSC_VER
 #  pragma warning(push, 3)
