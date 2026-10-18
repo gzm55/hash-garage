@@ -70,6 +70,50 @@ All four variants — `fifty2hash64`, `fifty2hash128`, `fifty2hash128l`, `fifty2
 - [rurban/smhasher](https://github.com/rurban/smhasher), including LongNeighbors
 - [demerphq/smhasher](https://github.com/demerphq/smhasher/)
 - [smhasher3](https://gitlab.com/fwojcik/smhasher3)
+- [massive collision tester](https://github.com/Cyan4973/xxHash/tree/dev/tests/collisions), 100G samples per length
+
+Here `G` = `2^30`, so 100G ≈ 1.07 × 10^11 keys.
+
+#### 64-bit
+
+Per length: 100G keys. For a uniform 64-bit hash the expected same-length collision
+count is n² / 2^65 ≈ 312.5; the observed counts (271-341) match.
+
+| length | samples | `fifty2hash64` | `fifty2hash128l` | `fifty2hash128h` |
+|---|---|---|---|---|
+| 6 | 100G | 0 | 329 | 317 |
+| 7 | 100G | 0 | 298 | 341 |
+| 8 | 100G | 0 | 302 | 329 |
+| 9 | 100G | 325 | 316 | 311 |
+| 16 | 100G | 296 | 311 | 299 |
+| 32 | 100G | 298 | 305 | 323 |
+| 64 | 100G | 283 | 306 | 286 |
+| 256 | 100G | 324 | 304 | 316 |
+| 512 | 100G | 330 | 324 | 331 |
+| 1024 | 100G | 271 | 296 | 308 |
+| 4096 | 100G | 281 | 284 | 305 |
+
+`fifty2hash64` cannot collide at lengths 6/7/8 — see "integer bijections" above
+(lengths 0-7 injective, length 8 a full-width bijection) — so its first collisions
+appear at length 9. The 128-bit halves have no such property and collide at every length.
+
+#### 128-bit
+
+Per length: 100G keys.
+
+| variant | lengths | samples | **semi union collisions** |
+|---|---|---|---|
+| `fifty2hash128` | 6/7/8/9/16/32/64/256/512/1024/4096 | 100G each | 0 |
+
+The **semi union collisions** above: candidates are collected within each single
+length, then the candidate sets of all lengths are merged and jointly sorted to find
+collisions (expected and observed: 0).
+
+For a uniform 128-bit hash with n = 100G samples, the natural expected collision
+count per length is n²/2^129 ≈ 1.7e-17 — zero for every length > 16. Lengths <= 16
+are injective by construction (see "integer bijections"), so exactly 0 there; length
+16 is a full-width bijection that can only collide with a shorter length, and even
+that is ~0 at 100G samples. Hence the semi-union expectation is 0.
 
 ### Speed
 

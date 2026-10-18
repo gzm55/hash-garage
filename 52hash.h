@@ -1,32 +1,27 @@
 /*
  * 52hash.h — IFMA-based hash: data x data multiply + additive seed/len mixing.
  *
- * Non-cryptographic: designed for hash tables, dedup, etc.  Not collision-resistant;
+ * Non-cryptographic: for hash tables, dedup, checksums. Not collision-resistant;
  * do not use for security purposes.
  *
- * Uses SIMD when AVX-512 IFMA (F52_HAVE_AVX512IFMA) is available; otherwise the
- * medium-loop/long paths fall back to a scalar layer (f52_v8), bit-identical to SIMD.
- * Portable across GNU/Clang/MSVC: the 64x64->128 multiply picks __int128 / _umul128 /
- * 32x32 decomposition by compiler; bswap/rotate, attributes, endianness and static
- * asserts all have F52_* portable wrappers.
+ * Uses AVX-512 IFMA (F52_HAVE_AVX512IFMA) when available; otherwise a scalar
+ * fallback (f52_v8) produces bit-identical results. Portable across GCC/Clang/MSVC
+ * and 32/64-bit.
  *
- * The 64-bit and 128-bit variants share the mixing core but use different finalizers,
- * so the low 64 bits of fifty2hash128(x) != fifty2hash64(x); they must not be truncated
- * from one another.
+ * The 64- and 128-bit variants share the mixing core but use different finalizers,
+ * so the low 64 bits of fifty2hash128(x) != fifty2hash64(x); never substitute.
  *
- * Length-tiered: <=16B short / 17-96B medium / 97-895B medium loop / >=896B long.
+ * Length tiers: <=16 short / 17-96 medium / 97-895 medium loop / >=896 long.
  *
- * For a fixed seed the short path is injective over the union of lengths 0-7 (64b) /
- * 0-15 (128b), and lengths 8 (64b) / 16 (128b) are full-width bijections.  Because the
- * full-width bijection covers the entire output space, no cross-length collision-freedom
- * is guaranteed between shorter lengths and the full-width length.
+ * For a fixed seed the short path is injective over lengths 0-7 (64b) / 0-15 (128b),
+ * and lengths 8 (64b) / 16 (128b) are full-width bijections; no cross-length
+ * collision-freedom is guaranteed between shorter lengths and the full width.
  */
 #ifndef FIFTY2HASH_H
 #define FIFTY2HASH_H
 
-/* Version.  "1" for the first release; the "-dev" suffix marks a not-yet-released
- * development state (currently: collision testing in progress). */
-#define F52_VERSION "1-dev"
+/* Version. Bump on each release. */
+#define F52_VERSION 1
 
 #include <stdint.h>
 #include <stddef.h>
@@ -36,37 +31,26 @@
 #  include <intrin.h>   /* _byteswap_*, _rotl64/_rotr64, _umul128 */
 #endif
 
-/* C89 (pre-C99 C) has no `inline` keyword: map it away so `static inline` degrades to
- * plain `static`.  Undone at the end of this header (see F52_UNDEF_INLINE). */
+/* Pre-C99 C has no `inline`; map it away (undone at the end of this header). */
 #if !defined(__cplusplus) && !(defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L))
 #  define inline
 #  define F52_UNDEF_INLINE 1
 #endif
 
-/* ---- AVX-512 IFMA detection ----
- * GCC/Clang define __AVX512IFMA__ under -mavx512ifma / -march=native; MSVC cl.exe does
- * not, so CMake detects IFMA and defines F52_FORCE_AVX512IFMA (together with /arch:AVX512). */
+/* GCC/Clang define __AVX512IFMA__ under -mavx512ifma / -march=native; MSVC does not,
+ * so define F52_FORCE_AVX512IFMA (with /arch:AVX512) there. */
 #if defined(__AVX512IFMA__) || defined(F52_FORCE_AVX512IFMA)
 #  define F52_HAVE_AVX512IFMA 1
 #else
 #  define F52_HAVE_AVX512IFMA 0
 #endif
 
-/* The SIMD section (immintrin.h + medium-loop/long paths) is compiled only under
- * F52_HAVE_AVX512IFMA; otherwise the scalar fallback is used. */
 #if F52_HAVE_AVX512IFMA
 #  include <immintrin.h>
 #endif
 
-/* ---- compiler optimization / attribute macros ----
- * F52_AINLINE:  force-inline leaf helpers.
- * F52_CONST:    pure-function attribute (result depends only on arguments).
- * F52_NOINLINE: inhibit inlining (keep large functions standalone).
- * F52_LIKELY/UNLIKELY: branch probability hints.
- * F52_RESTRICT: restrict pointer qualifier.
- * F52_ALIGN64:  64-byte alignment (for _mm512_load_si512).
- * Note: const is a strong promise; functions that read/write pointed-to memory must not
- * be marked (or CSE can miscompile them). */
+/* F52_AINLINE force-inline; F52_CONST pure; F52_NOINLINE; F52_LIKELY/UNLIKELY;
+ * F52_RESTRICT; F52_ALIGN64. Do not mark const functions that touch memory. */
 #if defined(_MSC_VER)
 #  define F52_AINLINE __forceinline
 #  define F52_CONST
@@ -93,15 +77,14 @@
 #  define F52_NOINLINE
 #endif
 
-/* GCC<10 ICEs on the __attribute__((target)) + inline-asm combination; disable both there
- * (the TU is compiled globally with -mavx512ifma, so dropping them is harmless). */
+/* GCC<10 ICEs on __attribute__((target)) + inline asm; drop both there (the TU is
+ * already compiled with -mavx512ifma). */
 #if defined(__GNUC__) && !defined(__clang__) && __GNUC__ < 10
 #  define F52_GCC_LEGACY 1
 #endif
 
-/* Static assert: expands to a declaration (file scope).  The negative-array fallback builds a
- * unique name from __COUNTER__ via two-level CONCAT (a single-level name##__COUNTER__ does NOT
- * expand __COUNTER__).  __COUNTER__ is supported by all targeted compilers (GCC/Clang/MSVC). */
+/* File-scope static assert; pre-C11/C++11 falls back to a negative array named by
+ * two-level __COUNTER__ concat. */
 #if defined(__cplusplus) && (__cplusplus >= 201103L)
 #  define F52_STATIC_ASSERT(c, m) static_assert((c), m)
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
@@ -112,9 +95,8 @@
 #  define F52_STATIC_ASSERT(c, m) typedef char F52_SA_CAT(f52_static_assert_failed_, __COUNTER__)[(c) ? 1 : -1]
 #endif
 
-/* SIMD function attribute: GNU/Clang use function-level target(avx512f,avx512ifma)
- * + noinline; MSVC has no function-level target (relies on TU-level /arch:AVX512) so only
- * noinline; legacy GCC (F52_GCC_LEGACY) also drops the target. */
+/* GNU/Clang use function-level target(avx512f,avx512ifma)+noinline; MSVC relies on
+ * TU-level /arch:AVX512 (no function target); legacy GCC drops the target. */
 #if F52_HAVE_AVX512IFMA
 #  if defined(_MSC_VER)
 #    define F52_AVX512_FN __declspec(noinline)
@@ -123,8 +105,7 @@
 #  else
 #    define F52_AVX512_FN __attribute__((target("avx512f,avx512ifma"), noinline))
 #  endif
-/* MSVC lacks _mm512_rol/ror_epi64; fall back to shift+or (bit-identical per lane).
- * n must satisfy 0 < n < 64. */
+/* MSVC lacks _mm512_rol/ror_epi64; shift+or is bit-identical per lane (0 < n < 64). */
 #  if defined(_MSC_VER)
 #    define F52_ROL512(x, n) _mm512_or_si512(_mm512_slli_epi64((x), (n)), _mm512_srli_epi64((x), 64 - (n)))
 #    define F52_ROR512(x, n) _mm512_or_si512(_mm512_srli_epi64((x), (n)), _mm512_slli_epi64((x), 64 - (n)))
@@ -134,57 +115,21 @@
 #  endif
 #endif
 
+/* Multipliers P1/P2/P3 must be odd (bijective); M1-M4 are additive magics (need not be). */
 #define F52_P1 0x9E3779B97F4A7C15ULL
 #define F52_P2 0xC2B2AE3D27D4EB4FULL
-#define F52_P3 0xCE516090AD952CC7ULL   /* odd multiplier (bijective) */
-
-/* Non-multiplier magics (additive seed/len mixing and final-block cross-multiply):
- * need not be odd/bijective.  The multipliers P1/P2/P3 must be odd (to stay bijective). */
+#define F52_P3 0xCE516090AD952CC7ULL
 #define F52_M1 0x165667B19E3779F9ULL
 #define F52_M2 0xC6A4A7935BD1E994ULL
 #define F52_M3 0xFF51AFD7ED558CCDULL
 #define F52_M4 0xD6E8FEB86659FD92ULL
-#define F52_M52 0xFFFFFFFFFFFFFULL   /* 52-bit mask (IFMA madd52lo/hi 52-bit truncation) */
+#define F52_M52 0xFFFFFFFFFFFFFULL   /* 52-bit mask (IFMA truncation) */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#if F52_HAVE_AVX512IFMA
-static inline F52_AINLINE __m512i f52_ld(const uint8_t * const p) {
-    return _mm512_loadu_si512((const void *)p);
-}
-
-/* Misaligned-friendly 64B load: two separate 32B loads + combine; reads the same bytes
- * as f52_ld. */
-static inline F52_AINLINE __m512i f52_ld32(const uint8_t * const p) {
-    __m256i lo = _mm256_loadu_si256((const __m256i *)p);
-    __m256i hi = _mm256_loadu_si256((const __m256i *)(p + 32));
-#if defined(__GNUC__) && !defined(F52_GCC_LEGACY)
-    __asm__("" : "+x"(lo), "+x"(hi));   /* keep the two halves in registers (MLP) */
-#endif
-    /* VSHUFFI64X2 (AVX-512F), imm 0x44 -> [lo.lo128, lo.hi128, hi.lo128, hi.hi128]:
-     * the high 256 bits get hi.  Pure AVX-512F (VINSERTI32X8 would need AVX-512DQ). */
-    return _mm512_shuffle_i64x2(_mm512_castsi256_si512(lo), _mm512_castsi256_si512(hi), 0x44);
-}
-
-/* Pin the vector in a register so gcc cannot fold the load into a later load-op and
- * drag the L2-miss latency onto the accumulator chain. */
-#if defined(__GNUC__) && !defined(F52_GCC_LEGACY)
-#define F52_REG(v) __asm__("" : "+v"(v))
-#else
-#define F52_REG(v) ((void)0)
-#endif
-
-static inline F52_AINLINE F52_CONST uint64_t f52_reduce(__m512i sum) {
-    /* 8->4->2->1 horizontal XOR reduce; the final 64-bit pair is combined in scalar
-     * (avoids a constant-index permute; _mm_extract_epi64 works on 32-bit). */
-    __m512i t = _mm512_xor_si512(sum, _mm512_shuffle_i64x2(sum, sum, 0x4E));
-    t = _mm512_xor_si512(t, _mm512_shuffle_i64x2(t, t, 0xB1));
-    __m128i lo = _mm512_castsi512_si128(t);
-    return (uint64_t)_mm_extract_epi64(lo, 0) ^ (uint64_t)_mm_extract_epi64(lo, 1);
-}
-#endif /* F52_HAVE_AVX512IFMA */
+/* ---- portable scalar helpers ---- */
 
 static inline F52_AINLINE F52_CONST uint64_t f52_bswap64(const uint64_t x) {
 #if defined(_MSC_VER)
@@ -200,8 +145,7 @@ static inline F52_AINLINE F52_CONST uint32_t f52_bswap32(const uint32_t x) {
     return __builtin_bswap32(x);
 #endif
 }
-/* rotate: well-defined for any count (unsigned shift, no x>>64 or -INT_MIN UB),
- * compiles to a single rol/ror. */
+/* rotate: unsigned shift, defined for any count. */
 static inline F52_AINLINE F52_CONST uint64_t f52_rotl(const uint64_t x, const int count) {
 #if defined(_MSC_VER)
     return _rotl64(x, count);
@@ -219,9 +163,7 @@ static inline F52_AINLINE F52_CONST uint64_t f52_rotr(const uint64_t x, const in
 #endif
 }
 
-/* 64x64 -> 128 unsigned multiply: native __int128 on 64-bit GCC/Clang, _umul128 on
- * MSVC x64, 32x32 decomposition on 32-bit (all bit-identical).  F52_MUL_LO/HI extract
- * the low/high 64 bits of the product. */
+/* 64x64->128: __int128 (GCC/Clang 64-bit), _umul128 (MSVC x64), 32x32 (32-bit). */
 #if defined(__SIZEOF_INT128__)
 typedef __uint128_t f52_u128;
 static inline F52_AINLINE F52_CONST f52_u128 f52_mul128(const uint64_t a, const uint64_t b) {
@@ -254,8 +196,9 @@ static inline F52_AINLINE F52_CONST f52_u128 f52_mul128(const uint64_t a, const 
 #  define F52_MUL_HI(m) ((m).hi)
 #endif
 
-/* Parameterized avalanche: shift->multiply->shift (sms); shift==F52_SKIP_SHIFT skips a
- * stage (covering sm/ms/sms); constant-folded, no runtime branch. */
+/* ---- avalanche family ---- */
+
+/* shift->multiply->shift; shift==F52_SKIP_SHIFT skips a stage (sm/ms/sms). */
 #define F52_SKIP_SHIFT 64
 static inline F52_AINLINE F52_CONST uint64_t f52_avalanche64_sms(uint64_t x, const int shift1,
                                            const uint64_t magic, const int shift2) {
@@ -265,18 +208,15 @@ static inline F52_AINLINE F52_CONST uint64_t f52_avalanche64_sms(uint64_t x, con
     return x;
 }
 
-/* Statement-block variant of sms: modifies (x) in place, expanding textually to avoid a
- * callee-saved push/pop (e.g. push rbx in the short le8 branch), helping g++ avoid spills.
- * Semantically identical to f52_avalanche64_sms; arguments must be side-effect-free lvalues.
- * shift is masked &63 (avoids a shift>=width warning when shift==F52_SKIP_SHIFT). */
+/* In-place sms (textually expanded to avoid a callee-saved spill in short le8);
+ * arguments must be side-effect-free lvalues; shift masked &63. */
 #define F52_AVALANCHE64_SMS(x, shift1, magic, shift2) { \
         if ((shift1) != F52_SKIP_SHIFT) (x) ^= (x) >> ((shift1) & 63); \
         (x) *= (magic); \
         if ((shift2) != F52_SKIP_SHIFT) (x) ^= (x) >> ((shift2) & 63); \
     }
 
-/* 128-bit dual finalizer: one f52_avalanche64_sms on each of (lo_in,hi_in); the seed is
- * mixed in by the caller. */
+/* 128-bit dual finalizer: one sms per half; seed mixed in by the caller. */
 static inline F52_AINLINE void f52_avalanche64x2(const uint64_t lo_in, const uint64_t hi_in,
                                      uint64_t * F52_RESTRICT const lo, uint64_t * F52_RESTRICT const hi,
                                      const int s1_lo, const uint64_t magic_lo, const int s2_lo,
@@ -285,14 +225,13 @@ static inline F52_AINLINE void f52_avalanche64x2(const uint64_t lo_in, const uin
     *hi = f52_avalanche64_sms(hi_in, s1_hi, magic_hi, s2_hi);
 }
 
-/* Combine two u64 into one: fold the 128-bit product halves (m.H ^ m.L) plus
- * bswap64(lo) + hi crossover. */
+/* Combine two u64: fold 128-bit product halves + bswap/lo+hi crossover. */
 static inline F52_AINLINE F52_CONST uint64_t f52_avalanche64_fold(const uint64_t lo, const uint64_t hi) {
     const f52_u128 m = f52_mul128(lo, hi);
     return f52_bswap64(lo) + hi + (F52_MUL_LO(m) ^ F52_MUL_HI(m));
 }
 
-/* nano: (ml,mh) = lo*hi + same-side add (no bswap); inputs must already be dense. */
+/* nano: (ml,mh) = lo*hi + same-side add; inputs must already be dense. */
 static inline F52_AINLINE void f52_avalanche128_nano(const uint64_t lo, const uint64_t hi,
                                           uint64_t * F52_RESTRICT const ml, uint64_t * F52_RESTRICT const mh) {
     const f52_u128 m = f52_mul128(lo, hi);
@@ -300,10 +239,8 @@ static inline F52_AINLINE void f52_avalanche128_nano(const uint64_t lo, const ui
     *mh = F52_MUL_HI(m) + hi;
 }
 
-/* Lossless Lai-Massey bijection: t=lo-hi, f=fold(t*rotl(t,rot)), ml=lo+f, mh=hi+f.
- * A strict 128->128 bijection; invariant ml-mh=lo-hi, so the preceding stage must densify. */
-#define F52_LM_ROT 37   /* rotation distance (odd, coprime to 64) */
-
+/* Lossless Lai-Massey bijection: t=lo-hi, f=fold(t*rotl(t,rot)), out=lo/hi+f. */
+#define F52_LM_ROT 37   /* odd, coprime to 64 */
 static inline F52_AINLINE void f52_avalanche128_lm(const uint64_t lo, const uint64_t hi, const int rot,
                                           uint64_t * F52_RESTRICT const ml, uint64_t * F52_RESTRICT const mh) {
     const uint64_t t = lo - hi;
@@ -313,25 +250,9 @@ static inline F52_AINLINE void f52_avalanche128_lm(const uint64_t lo, const uint
     *mh = hi + f;
 }
 
-#if F52_HAVE_AVX512IFMA
-static inline F52_AINLINE F52_CONST __m512i f52_avalanche_v(__m512i x, const uint64_t magic, const unsigned s1, const unsigned s2) {
-    x = _mm512_xor_si512(x, _mm512_srli_epi64(x, s1));
-    /* 32x32->32 (VPMULLD, AVX-512F) rather than 64x64->64 (VPMULLQ, AVX-512DQ);
-     * magic's low 32 bits are odd, so each 32-bit lane stays a bijection. */
-    x = _mm512_mullo_epi32(x, _mm512_set1_epi32((int)(uint32_t)magic));
-    x = _mm512_xor_si512(x, _mm512_srli_epi64(x, s2));
-    return x;
-}
-#endif /* F52_HAVE_AVX512IFMA */
+/* ---- endianness + readers + seed mix ---- */
 
-/* ---- short-input (<=16B) paths (scalar) ----
- *
- * Fixed-width (2^p) loads: a 1..3-byte index trick, two overlapping 4B reads for 4..8,
- * two overlapping 8B reads for 9..16 — avoids a variable-length memcpy. */
-
-/* rd32/64/128 interpret input as little-endian: byteswap on big-endian machines so the
- * same byte sequence hashes identically across endianness.  MSVC targets are all LE and
- * lack __BYTE_ORDER__. */
+/* rd32/64/128 interpret input little-endian (byteswap on BE); MSVC is always LE. */
 #if defined(_MSC_VER)
 #  define F52_IS_BE 0
 #elif defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
@@ -341,8 +262,7 @@ static inline F52_AINLINE F52_CONST __m512i f52_avalanche_v(__m512i x, const uin
 #  define F52_IS_BE 0
 #endif
 
-/* x86/x86_64 are always little-endian; the SIMD path has no byte swap, so a misconfigured
- * endianness is a compile-time error. */
+/* The SIMD path has no byte swap, so a misconfigured endianness must fail at compile time. */
 #if (defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)) && F52_IS_BE
 #  error "x86/64 target must be little-endian (F52_IS_BE must be 0)"
 #endif
@@ -355,20 +275,21 @@ static inline F52_AINLINE uint64_t f52_rd64(const uint8_t * const p) {
     uint64_t v; memcpy(&v, p, 8);
     return F52_IS_BE ? f52_bswap64(v) : v;
 }
-/* Read 16B and split lo/hi (LE: lo=p[0..7]); each half is byte-swapped on BE.  Two rd64
- * calls (not __uint128_t) so it works on 32-bit. */
+/* Read 16B into lo/hi (two rd64, so 32-bit-friendly). */
 static inline F52_AINLINE void f52_rd128(const uint8_t *const p, uint64_t *const lo, uint64_t *const hi) {
     *lo = f52_rd64(p);
     *hi = f52_rd64(p + 8);
 }
 
-/* seed pre-mix: mode=1 default rotl(seed,32)+M1; modes 2/3 are the medium A/B additive
- * mix + magic rotate. */
+/* seed pre-mix: mode=1 rotl(seed,32)+M1; modes 2/3 are the medium A/B additive mixes. */
 static inline F52_AINLINE F52_CONST uint64_t f52_seed_mix(const uint64_t seed, const int mode, const int shift) {
-    if (mode==2) return seed + f52_rotl(F52_M2, shift);   /* medium A: additive mix + magic rotate */
-    if (mode==3) return seed + f52_rotl(F52_M4, shift);   /* medium B */
-    return f52_rotl(seed, 32) + F52_M1;                   /* default mode=1 */
+    if (mode==2) return seed + f52_rotl(F52_M2, shift);
+    if (mode==3) return seed + f52_rotl(F52_M4, shift);
+    return f52_rotl(seed, 32) + F52_M1;
 }
+
+/* ---- short-input (<=16B) paths (scalar) ----
+ * Fixed-width (2^p) loads avoid a variable-length memcpy. */
 
 static inline F52_AINLINE uint64_t f52_mix_le7(const uint8_t * const p, const size_t n) {
     assert(n <= 7);
@@ -386,37 +307,30 @@ static inline F52_AINLINE uint64_t f52_mix_le7(const uint8_t * const p, const si
     return 0;
 }
 
-/* Symmetric-fold square (64-bit Lai-Massey):
- *   y = x ^ rotl(x,32)  -> y is symmetric (lo32 == hi32 == t)
- *   y *= y (low 64)      -> t^2 + t^2<<33 (cross-term spread, no 128-bit hi carry)
- *   x ^= y ^ rotl(y,32)   -> strict bijection preserving the invariant t=lo^hi
- * Statement-block macro (not do-while(0), no const on locals) so g++ does not spill.
- * A later multiply by any odd magic stays bijective. */
+/* 64-bit Lai-Massey: y=x^rotl(x,32); y*=y; x^=y^rotl(y,32). Statement-block macro
+ * (no do-while, no const locals) so g++ does not spill; a later odd multiply stays bijective. */
 #define F52_AVALANCHE64_LM(x) { \
         uint64_t _f52_y = (x) ^ f52_rotl((x), 32); \
         uint64_t _f52_yy = _f52_y * _f52_y; \
         (x) ^= _f52_yy ^ f52_rotl(_f52_yy, 32); \
     }
 
-/* Short-key (<=8B) finalizer: split seed mix + xorshift + symmetric-fold square (lm) + imul.
- *   len==8: seed += (seed<<14)+P1;  len<8: seed += (seed<<10)+M2
- *     (splitting P1/M2 lets the two shifts differ, and distinct seed constants prevent CSE
- *      from merging the branches).
- *   x ^= seed;  x ^= x>>11;  x = lm(x);  seed ^= rotl(seed,33);  x+=seed; x*=P1; x^=x>>22. */
+/* Short-key (<=8B) finalizer: split seed mix + xorshift + lm + sms. The P1/M2 seed
+ * constants differ so the two branches cannot be CSE-merged (letting the shifts differ). */
 static inline uint64_t f52_short64_le8(const uint8_t * const p, const size_t len, uint64_t seed) {
     uint64_t x;
     assert(len <= 8);
 
     if (len == 8) {
-        seed += (seed << 14) + F52_P1; /* P1 */
+        seed += (seed << 14) + F52_P1;
         x = f52_rd64(p);
     } else {
-        seed += (seed << 10) + F52_M2; /* M2 (differs from P1 => two shifts can differ) */
+        seed += (seed << 10) + F52_M2;
         x = f52_mix_le7(p, len);
     }
 
     x ^= seed;
-    x ^= x >> 11;                                    /* T0 xorshift spread */
+    x ^= x >> 11;
     F52_AVALANCHE64_LM(x);
 
     seed ^= f52_rotl(seed, 33);
@@ -426,8 +340,7 @@ static inline uint64_t f52_short64_le8(const uint8_t * const p, const size_t len
 
 static inline uint64_t f52_short64_9_16(const uint8_t * const p, const size_t len, uint64_t seed) {
     assert(len >= 9 && len <= 16);
-    /* 9-16B: overlapping 8B reads (front/back) + seed mix, then two data x data
-     * multiplies (nano crossover + fold) to finish. */
+    /* overlapping 8B reads + seed mix, then two data x data multiplies to finish. */
     uint64_t sl = seed + f52_rotl(F52_M1, (int)len);
     uint64_t sh = f52_seed_mix(seed, 1, 0);
     uint64_t lo = f52_rd64(p)           ^ sl;
@@ -481,75 +394,42 @@ static inline void f52_short128_le16(const uint8_t * const p, const size_t len, 
     f52_avalanche64x2(il + seed, ih + seed, lo, hi, 35, F52_P2, 28, 37, F52_P1, 32);
 }
 
-/* medium path (17-96B): scalar self-feedback A,B state — each value is both an accumulator
- * and a multiply operand for the next round.  The raw A/B addition keeps all input
- * information (multiply never truncates).  Per 16B block:
- *   A+=d0; B+=d1; A+=Low52(A*B); B=ror(B,12); B+=bits[76..128)(A*B).
- * 64/128 share this core; only the final A,B -> output compression differs. */
-/* laneoff: shared by SIMD and scalar.  off[i] = P1*(i+1) ^ P2*(i>>1): the P2 term breaks
- * the symmetry of the purely linear P1 multiples. */
+/* ---- medium path (17-96B): scalar self-feedback A,B state. Per 16B block:
+ * A+=d0; B+=d1; A+=low52(A*B); B=ror(B,12); B+=bits[76..128)(A*B).
+ * 64/128 share this core; only the final compression differs. ---- */
+
+/* laneoff: shared by SIMD and scalar; off[i]=P1*(i+1)^P2*(i>>1). */
 F52_ALIGN64 static const uint64_t f52_laneoff[8] = {
     F52_P1,                   F52_P1 * 2,
     F52_P1 * 3 ^ F52_P2,      F52_P1 * 4 ^ F52_P2,
     F52_P1 * 5 ^ F52_P2 * 2,  F52_P1 * 6 ^ F52_P2 * 2,
     F52_P1 * 7 ^ F52_P2 * 3,  F52_P1 * 8 ^ F52_P2 * 3,
 };
-/* _mm512_load_si512(f52_laneoff) reads a full 512 bits, so the table must be exactly
- * 8 x u64 (or it overruns). */
+/* _mm512_load_si512 reads a full 512 bits, so the table must be exactly 8 x u64. */
 F52_STATIC_ASSERT(sizeof(f52_laneoff) == 8 * sizeof(uint64_t), "f52_laneoff must be 8 u64");
 
-#if F52_HAVE_AVX512IFMA
-/* broadcast seed + laneoff XOR, initializing the 14 accumulators of the medium loop and
- * long path.  ov is loaded once by the caller and reused; k=0..13 -> P2*1..14 separates
- * the accumulators, laneoff separates the lanes within one vector. */
-static inline F52_AINLINE F52_CONST __m512i f52_seed_vector(const uint64_t seed, const uint64_t k, const __m512i ov) {
-    return _mm512_xor_si512(_mm512_set1_epi64((int64_t)(seed + F52_P2 * (k + 1))), ov);
-}
-
-/* Initialize A0..A6/B0..B6 from seed: one broadcast + laneoff XOR per accumulator. */
-#define F52_OFFV() _mm512_load_si512((const __m512i *)f52_laneoff)
-#define F52_INIT() \
-    do { \
-        __m512i f52_ov = F52_OFFV(); \
-        A0 = f52_seed_vector(seed, 0,  f52_ov); B0 = f52_seed_vector(seed, 1,  f52_ov); \
-        A1 = f52_seed_vector(seed, 2,  f52_ov); B1 = f52_seed_vector(seed, 3,  f52_ov); \
-        A2 = f52_seed_vector(seed, 4,  f52_ov); B2 = f52_seed_vector(seed, 5,  f52_ov); \
-        A3 = f52_seed_vector(seed, 6,  f52_ov); B3 = f52_seed_vector(seed, 7,  f52_ov); \
-        A4 = f52_seed_vector(seed, 8,  f52_ov); B4 = f52_seed_vector(seed, 9,  f52_ov); \
-        A5 = f52_seed_vector(seed, 10, f52_ov); B5 = f52_seed_vector(seed, 11, f52_ov); \
-        A6 = f52_seed_vector(seed, 12, f52_ov); B6 = f52_seed_vector(seed, 13, f52_ov); \
-    } while (0)
-#endif /* F52_HAVE_AVX512IFMA */
-
-/* medium mix core (shared by 64/128): block0 is computed first (the multiply hides the
- * switch jump), middle blocks advance a pointer via fallthrough, the final block is a
- * branchless full-block overlapping read.  A single switch dispatch -> fewest mispredicts. */
+/* medium mix core (shared 64/128): block0 first, middle blocks advance via fallthrough,
+ * final block is a branchless overlapping read. */
 static inline void f52_medium_mix_body(const uint8_t * const p, const size_t len, const uint64_t seed,
                                        uint64_t * F52_RESTRICT const outA, uint64_t * F52_RESTRICT const outB) {
-    /* seed mixes additively (mode=2/3, shift=len/2 and len): under sparse seed/key, XOR
-     * would cancel identical bits. */
+    /* additive seed mix (mode 2/3): XOR would cancel identical bits under sparse seed. */
     uint64_t A = f52_seed_mix(seed, 2, (int)(len / 2));
     uint64_t B = f52_seed_mix(seed, 3, (int)len);
 
-    /* Per block (16B = 2 u64): A+=d0; B+=d1; pr=A*B; A+=low52(pr); B=ror12(B);
-     * B+=bits[76..128)(pr).  One full 64x64->128 product; A and B come from the same pr
-     * (exact — unlike the IFMA truncation in the long loop). */
 #define F52_MCORE(p) \
     do { \
         uint64_t d0, d1; \
         f52_rd128(p, &d0, &d1); \
         A += d0; B += d1; \
         f52_u128 pr_ = f52_mul128(A, B); \
-        A += F52_MUL_LO(pr_) & 0xFFFFFFFFFFFFFULL; \
+        A += F52_MUL_LO(pr_) & F52_M52; \
         B = f52_rotr(B, 12); \
         B += F52_MUL_HI(pr_) >> 12; \
     } while (0)
 
-    F52_MCORE(p);        /* block0 first (directly at p) */
+    F52_MCORE(p);
 
-    /* Middle full blocks.  The switch dispatches on nfull (fallthrough): nfull=5->4 blocks
-     * ... 2->1 block, otherwise (17-32) no middle block.  Each case reads rd128(q) then
-     * q+=16 -> forward. */
+    /* middle full blocks: nfull=5->4 ... 2->1, otherwise none. */
     const uint8_t * q = p + 16;
     const size_t nfull = (len - 1) >> 4;
     switch (nfull) {
@@ -561,9 +441,7 @@ static inline void f52_medium_mix_body(const uint8_t * const p, const size_t len
     }
 #undef F52_MCORE
 
-    /* Final block: always a full-block overlapping read of [len-16, len), branchless, no
-     * self-feedback multiply (saves latency).  The l/h cross-multiply (h+M3)*(l+M4) is the
-     * only strongly l/h-coupled nonlinear pre-mix, and it stays off the critical path. */
+    /* final block: overlapping read of [len-16,len), no self-feedback multiply. */
     {
         uint64_t l, h;
         f52_rd128(p + len - 16, &l, &h);
@@ -580,7 +458,6 @@ static inline uint64_t f52_medium64_scalar(const uint8_t * const p, const size_t
     assert(len >= 17 && len <= 96);
     uint64_t A, B;
     f52_medium_mix_body(p, len, seed, &A, &B);
-    /* nano crossover + fold finalizer (seed mixes in via fold's A+seed). */
     f52_avalanche128_nano(A, B, &A, &B);
     return f52_avalanche64_fold(A + seed, B);
 }
@@ -589,19 +466,71 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
                                  uint64_t * F52_RESTRICT const out) {
     assert(len >= 17 && len <= 96);
     uint64_t A, B;
-    f52_medium_mix_body(p, len, seed, &A, &B);    /* final-block cross-multiply pre-mix (already l/h crossed) */
-    /* lm crossover (strict 128->128 bijection); final av64x2 mixes len via seed+len. */
+    f52_medium_mix_body(p, len, seed, &A, &B);
     f52_avalanche128_lm(A, B, F52_LM_ROT, &A, &B);
     f52_avalanche64x2(A + seed + len, B + seed + len, out, out + 1, 35, F52_P2, 28, 37, F52_P1, 32);
 }
 
+/* ==================== SIMD (AVX-512 IFMA) ==================== */
 #if F52_HAVE_AVX512IFMA
-/* ---- shared accumulation core ---- */
 
-/* Long path (len>=896): 7 self-feedback lanes, software-pipelined (this round's loads are
- * consumed only next round, hiding L2 latency behind a full round of madd52).  Per lane,
- * per round:
- *   A+=d0; B+=d1; sA=A>>12; A=madd52lo(A,A,B); B=ror(B,12); B=madd52hi(B,sA,B). */
+static inline F52_AINLINE __m512i f52_ld(const uint8_t * const p) {
+    return _mm512_loadu_si512((const void *)p);
+}
+
+/* misaligned-friendly 64B load: two 32B loads + shuffle (reads the same bytes as f52_ld). */
+static inline F52_AINLINE __m512i f52_ld32(const uint8_t * const p) {
+    __m256i lo = _mm256_loadu_si256((const __m256i *)p);
+    __m256i hi = _mm256_loadu_si256((const __m256i *)(p + 32));
+#if defined(__GNUC__) && !defined(F52_GCC_LEGACY)
+    __asm__("" : "+x"(lo), "+x"(hi));   /* keep halves in registers (MLP) */
+#endif
+    return _mm512_shuffle_i64x2(_mm512_castsi256_si512(lo), _mm512_castsi256_si512(hi), 0x44);
+}
+
+/* Pin the vector in a register so gcc cannot fold the load into a later load-op. */
+#if defined(__GNUC__) && !defined(F52_GCC_LEGACY)
+#define F52_REG(v) __asm__("" : "+v"(v))
+#else
+#define F52_REG(v) ((void)0)
+#endif
+
+static inline F52_AINLINE F52_CONST uint64_t f52_reduce(__m512i sum) {
+    __m512i t = _mm512_xor_si512(sum, _mm512_shuffle_i64x2(sum, sum, 0x4E));
+    t = _mm512_xor_si512(t, _mm512_shuffle_i64x2(t, t, 0xB1));
+    __m128i lo = _mm512_castsi512_si128(t);
+    return (uint64_t)_mm_extract_epi64(lo, 0) ^ (uint64_t)_mm_extract_epi64(lo, 1);
+}
+
+/* per-lane avalanche: 32x32->32 mullo (AVX-512F) keeps each 32-bit lane a bijection
+ * since magic's low 32 bits are odd. */
+static inline F52_AINLINE F52_CONST __m512i f52_avalanche_v(__m512i x, const uint64_t magic, const unsigned s1, const unsigned s2) {
+    x = _mm512_xor_si512(x, _mm512_srli_epi64(x, s1));
+    x = _mm512_mullo_epi32(x, _mm512_set1_epi32((int)(uint32_t)magic));
+    x = _mm512_xor_si512(x, _mm512_srli_epi64(x, s2));
+    return x;
+}
+
+/* broadcast seed + laneoff XOR; ov loaded once by the caller. */
+static inline F52_AINLINE F52_CONST __m512i f52_seed_vector(const uint64_t seed, const uint64_t k, const __m512i ov) {
+    return _mm512_xor_si512(_mm512_set1_epi64((int64_t)(seed + F52_P2 * (k + 1))), ov);
+}
+#define F52_OFFV() _mm512_load_si512((const __m512i *)f52_laneoff)
+#define F52_INIT() \
+    do { \
+        __m512i f52_ov = F52_OFFV(); \
+        A0 = f52_seed_vector(seed, 0,  f52_ov); B0 = f52_seed_vector(seed, 1,  f52_ov); \
+        A1 = f52_seed_vector(seed, 2,  f52_ov); B1 = f52_seed_vector(seed, 3,  f52_ov); \
+        A2 = f52_seed_vector(seed, 4,  f52_ov); B2 = f52_seed_vector(seed, 5,  f52_ov); \
+        A3 = f52_seed_vector(seed, 6,  f52_ov); B3 = f52_seed_vector(seed, 7,  f52_ov); \
+        A4 = f52_seed_vector(seed, 8,  f52_ov); B4 = f52_seed_vector(seed, 9,  f52_ov); \
+        A5 = f52_seed_vector(seed, 10, f52_ov); B5 = f52_seed_vector(seed, 11, f52_ov); \
+        A6 = f52_seed_vector(seed, 12, f52_ov); B6 = f52_seed_vector(seed, 13, f52_ov); \
+    } while (0)
+
+/* ---- long path (>=896B): 7 self-feedback lanes, software-pipelined. Per lane per round:
+ * A+=d0; B+=d1; sA=A>>12; A=madd52lo(A,A,B); B=ror(B,12); B=madd52hi(B,sA,B).
+ * This round's loads are consumed next round (hides L2 latency). ---- */
 
 #define F52_LD14(p) \
     do { \
@@ -621,7 +550,6 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
         d13 = f52_ld((p) + 832); F52_REG(d13); \
     } while (0)
 
-/* misaligned variant: each 64B window via two pinned 32B loads + a shuffle. */
 #define F52_LD14_32(p) \
     do { \
         d0 = f52_ld32(p);          F52_REG(d0); \
@@ -640,7 +568,6 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
         d13 = f52_ld32((p) + 832); F52_REG(d13); \
     } while (0)
 
-/* consume the loaded d0..d13 into the accumulators */
 #define F52_CONSUME7() \
     do { \
         A0 = _mm512_add_epi64(A0, d0);   B0 = _mm512_add_epi64(B0, d1); \
@@ -652,8 +579,7 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
         A6 = _mm512_add_epi64(A6, d12);  B6 = _mm512_add_epi64(B6, d13); \
     } while (0)
 
-/* mixing body: an srli snapshot decouples the two IFMAs (madd52lo reads old A,B, madd52hi
- * reads the snapshot sA + rotated B), no spill. */
+/* srli snapshot decouples the two IFMAs (madd52lo reads old A,B; madd52hi reads sA+rot B). */
 #define F52_BODY7_LANE(A, B) \
     { __m512i f52_sA = _mm512_srli_epi64(A, 12); \
       A = _mm512_madd52lo_epu64(A, A, B); \
@@ -667,7 +593,6 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
         F52_BODY7_LANE(A6, B6) \
     } while (0)
 
-/* pipelined round: consume previous loads, issue next round's loads, mix. */
 #define F52_PIPE7(pnext) \
     do { \
         F52_CONSUME7(); \
@@ -675,7 +600,6 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
         F52_BODY7(); \
     } while (0)
 
-/* misaligned-load variant of the pipelined round. */
 #define F52_PIPE7_32(pnext) \
     do { \
         F52_CONSUME7(); \
@@ -683,16 +607,14 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
         F52_BODY7(); \
     } while (0)
 
-/* drain round: consume the last loaded group, mix, no further load. */
 #define F52_FINAL7() \
     do { \
         F52_CONSUME7(); \
         F52_BODY7(); \
     } while (0)
 
-/* fresh tail round: loads only the remaining k = ceil(remain/64) fresh 64B chunks (ending
- * at input+len), reusing the previous strip's d[0..14-k-1] prefix.  This is a deliberate
- * load-saving choice, not a true sliding window — every byte is still mixed at least once. */
+/* tail: load only ceil(remain/64) fresh 64B chunks, reuse the previous strip's prefix
+ * (deliberate load-saving, not a true sliding window). */
 #define F52_TAIL7_32(pend, k) \
     do { \
         switch (k) { \
@@ -716,42 +638,31 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
         F52_BODY7(); \
     } while (0)
 
-/* accumulate: pipelined over 896B groups (loads deferred one round so the L2
- * latency is hidden); the tail then loads only the ceil(remain/64) fresh 64B
- * chunks (reusing the previous round's registers for the rest).
- * Only called for len >= 896 (the medium loop covers up to 895). */
-#define F52_ACCUMULATE_WITH(LD, PIPE, TAIL) \
+#define F52_ACCUMULATE_WITH(PIPE) \
     do { \
         size_t f52_i, f52_n; \
-        /* ceil(len/896): widen to u64 first so +895 cannot overflow on 32-bit (4 GiB inputs \
-         * are realistic there); on 64-bit only an input near UINT64_MAX could still overflow \
-         * (impractical). */ \
+        /* ceil(len/896); widen to u64 first so +895 cannot overflow on 32-bit. */ \
         f52_n = (size_t)(((uint64_t)len + 895) / 896); \
-        LD(input); \
+        F52_LD14(input); \
         for (f52_i = 0; f52_i + 1 < f52_n - 1; f52_i++) { \
             PIPE(input + (f52_i + 1) * 896); \
         } \
         F52_FINAL7(); \
         if (f52_n > 1) \
-            TAIL(input + len, (len - (f52_n - 1) * 896 + 63) / 64); \
+            F52_TAIL7_32(input + len, (len - (f52_n - 1) * 896 + 63) / 64); \
     } while (0)
 
-/* accumulate: pipelined over 896B groups (loads deferred one round hide L2 latency); each
- * load flavor reads the same bytes, so the hash is identical.  The main loop uses loadu for
- * short/aligned inputs and merge32 (2x32B loads + a shuffle) for large misaligned ones; the
- * tail uses merge32 to cover only the fresh bytes. */
 #define F52_LOADU_MAX (55 * 896)
 #define F52_ACCUMULATE() \
     do { \
         if (F52_LIKELY(len <= F52_LOADU_MAX || f52_off == 0)) \
-            F52_ACCUMULATE_WITH(F52_LD14, F52_PIPE7, F52_TAIL7_32); /* prologue+loop loadu, partial merge32 */ \
+            F52_ACCUMULATE_WITH(F52_PIPE7); \
         else \
-            F52_ACCUMULATE_WITH(F52_LD14, F52_PIPE7_32, F52_TAIL7_32); /* prologue loadu, loop+partial merge32 */ \
+            F52_ACCUMULATE_WITH(F52_PIPE7_32); \
     } while (0)
 
-/* [97, 896B) medium loop: 7 independent 128B lanes, three switch stages load / seed+ifma / reduce. */
+/* ---- medium loop [97, 896B): 7 independent 128B lanes. ---- */
 
-/* one medium lane: seed (2k,2k+1) -> add dA,dB -> madd52 mix. */
 #define F52_MLANE(A, B, k, dA, dB, ov) \
     do { \
         A = f52_seed_vector(seed, 2 * (k), ov); \
@@ -764,10 +675,7 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
           B = _mm512_madd52hi_epu64(B, f52_sA, B); } \
     } while (0)
 
-/* In debug builds, zero-initialize the d/acc registers (guards against a future change
- * missing a case -> UB); not expanded in release (the call site's pragma silences the
- * false positive).  ⚠ Before editing F52_MEDIUM_LOOP's switch (nblocks/nlanes cases), run
- * DEBUG_ZEROINIT over all lengths 97-895 — in release a missing case is silent UB. */
+/* Debug-only zero-init guards against a missing switch case -> UB; release pays nothing. */
 #ifndef NDEBUG
 #define F52_DEBUG_ZEROINIT \
         f52_A = f52_B = f52_C = f52_D = f52_E = f52_F = f52_G = \
@@ -780,16 +688,14 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
 
 #define F52_MEDIUM_LOOP(outA, outB) \
     do { \
-        size_t f52_nblocks = len >> 7;                 /* full 128B blocks: 0..6 */ \
+        size_t f52_nblocks = len >> 7; \
         size_t f52_tail = len & 127; \
-        size_t f52_nlanes = f52_nblocks + (f52_tail ? 1 : 0);  /* 1..7 */ \
+        size_t f52_nlanes = f52_nblocks + (f52_tail ? 1 : 0); \
         __m512i f52_A, f52_B, f52_C, f52_D, f52_E, f52_F, f52_G, \
                 f52_H, f52_I, f52_J, f52_K, f52_L, f52_M, f52_N; \
         __m512i f52_d0, f52_d1, f52_d2, f52_d3, f52_d4, f52_d5, f52_d6, \
                 f52_d7, f52_d8, f52_d9, f52_d10, f52_d11, f52_td0, f52_td1; \
-        /* debug-only zero-init (guards against a missing case -> UB); release pays nothing. */ \
         F52_DEBUG_ZEROINIT \
-        /* ---- switch LOAD ---- */ \
         switch (f52_nblocks) { \
             case 6: f52_d10 = f52_ld(input + 640); f52_d11 = f52_ld(input + 704);  /* fallthrough */ \
             case 5: f52_d8  = f52_ld(input + 512); f52_d9  = f52_ld(input + 576);  /* fallthrough */ \
@@ -800,12 +706,10 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
             default: break; \
         } \
         if (f52_tail) { \
-            /* final 64B window: overlapping read at input+len-64 (len>=64 always holds). */ \
             f52_td0 = f52_ld(input + len - 64); \
             f52_td1 = (f52_tail >= 64) ? f52_ld(input + (f52_nblocks << 7)) \
                                        : _mm512_setzero_si512(); \
         } \
-        /* ---- switch SEED+IFMA (merged) ---- */ \
         { __m512i f52_ov = F52_OFFV(); \
         switch (f52_nblocks) { \
             case 6: F52_MLANE(f52_K, f52_L, 5, f52_d10, f52_d11, f52_ov);  /* fallthrough */ \
@@ -817,7 +721,7 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
             default: break; \
         } \
         if (f52_tail) { \
-            switch (f52_nblocks) { /* tail lane = nblocks */ \
+            switch (f52_nblocks) { \
                 case 0: F52_MLANE(f52_A, f52_B, 0, f52_td0, f52_td1, f52_ov); break; \
                 case 1: F52_MLANE(f52_C, f52_D, 1, f52_td0, f52_td1, f52_ov); break; \
                 case 2: F52_MLANE(f52_E, f52_F, 2, f52_td0, f52_td1, f52_ov); break; \
@@ -828,7 +732,6 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
             } \
         } \
         } \
-        /* ---- switch REDUCE ---- */ \
         { __m512i f52_RA = _mm512_setzero_si512(); \
           __m512i f52_RB = _mm512_setzero_si512(); \
           switch (f52_nlanes) { \
@@ -859,12 +762,12 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
         } \
     } while (0)
 
+/* 64-bit medium loop (97-895B). */
 F52_AVX512_FN
 static uint64_t f52_medium64_loop_avx512(const uint8_t * const input, size_t len, uint64_t seed) {
     __m512i f52_MA, f52_MB;
-    assert(len >= 97 && len < 896);   /* ensures nblocks in [0,6], so every switch is exhaustive */
-    /* With F52_MEDIUM_LOOP's switch dispatch GCC cannot prove the per-lane registers are
-     * initialized -> -Wmaybe-uninitialized; no real UB, so silence it locally. */
+    assert(len >= 97 && len < 896);
+    /* GCC cannot prove the per-lane registers are initialized through the switch. */
 #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC diagnostic push
     #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
@@ -873,19 +776,17 @@ static uint64_t f52_medium64_loop_avx512(const uint8_t * const input, size_t len
 #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC diagnostic pop
 #endif
-    /* A/B fold, then a single reduce. */
     __m512i sum = _mm512_xor_si512(
         _mm512_xor_si512(f52_MA, f52_MB),
         _mm512_xor_si512(_mm512_srli_epi64(f52_MA, 32), _mm512_srli_epi64(f52_MB, 32)));
     uint64_t h = f52_reduce(sum);
-    /* full avalanche split into two sms (one +sl per layer).  sl uses seed_mix mode3 to mix
-     * len additively. */
     const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
     h = f52_avalanche64_sms(h + sl, 32, F52_P3, F52_SKIP_SHIFT);
     h = f52_avalanche64_sms(h + sl, 34, F52_P3, 22);
     return h;
 }
 
+/* 128-bit medium loop (97-895B). */
 F52_AVX512_FN
 static void f52_medium128_loop_avx512(const uint8_t * const input, size_t len, uint64_t seed,
                                       uint64_t out[2]) {
@@ -899,20 +800,15 @@ static void f52_medium128_loop_avx512(const uint8_t * const input, size_t len, u
 #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC diagnostic pop
 #endif
-    /* sl = seed_mix mode3 mixes len in; sh = bswap(sl) makes the two lanes asymmetric so
-     * the lm difference decorrelates. */
     const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
-    const uint64_t sh = f52_bswap64(sl);
+    const uint64_t sh = f52_bswap64(sl);   /* keep the two lanes asymmetric */
     uint64_t xlo = f52_reduce(f52_MA) + sl;
     uint64_t xhi = f52_reduce(f52_MB) + sh;
-    /* lm crossover (unified with medium128_scalar, strict bijection). */
     f52_avalanche128_lm(xlo, xhi, F52_LM_ROT, &xlo, &xhi);
     f52_avalanche64x2(xlo + sl, xhi + sh, &out[0], &out[1], 35, F52_P2, 28, 37, F52_P1, 32);
 }
 
-/* ---- 64-bit ---- */
-
-/* Long path for inputs >= 896B with AVX-512 */
+/* 64-bit long path (>=896B). */
 F52_AVX512_FN
 static uint64_t f52_long64_avx512(const void * const key, size_t len, uint64_t seed) {
     const uint8_t * const input = (const uint8_t *)key;
@@ -930,13 +826,65 @@ static uint64_t f52_long64_avx512(const void * const key, size_t len, uint64_t s
     sum = _mm512_xor_si512(sum,
         _mm512_xor_si512(_mm512_xor_si512(B4, B5), B6));
     uint64_t h = f52_reduce(sum);
-    /* full avalanche split into two sms (one +sl per layer) for enough spread on an all-zero
-     * key.  sl uses seed_mix mode3 to mix len additively. */
     const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
     h = f52_avalanche64_sms(h + sl, 32, F52_P3, F52_SKIP_SHIFT);
     h = f52_avalanche64_sms(h + sl, 34, F52_P3, 22);
     return h;
 }
+
+/* 128-bit long path (>=896B). */
+F52_AVX512_FN
+static void f52_long128_avx512(const void * const key, size_t len, uint64_t seed, uint64_t out[2]) {
+    const uint8_t * const input = (const uint8_t *)key;
+    assert(len >= 896);
+    const size_t f52_off = (uintptr_t)input & 63;
+    __m512i A0, A1, A2, A3, A4, A5, A6, B0, B1, B2, B3, B4, B5, B6;
+    __m512i d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13;
+    F52_INIT();
+    F52_ACCUMULATE();
+    /* lo uses xor-cross pairs, hi uses add-cross pairs (breaks the dA<->dB swap symmetry). */
+    __m512i lo = _mm512_add_epi64(
+        _mm512_xor_si512(_mm512_add_epi64(_mm512_xor_si512(A0, B1), _mm512_xor_si512(A1, B2)),
+                          _mm512_add_epi64(_mm512_xor_si512(A2, B3), _mm512_xor_si512(A3, B4))),
+        _mm512_xor_si512(_mm512_add_epi64(_mm512_xor_si512(A4, B5), _mm512_xor_si512(A5, B6)),
+                          _mm512_xor_si512(A6, B0)));
+    __m512i hi = _mm512_add_epi64(
+        _mm512_xor_si512(_mm512_add_epi64(_mm512_add_epi64(A0, B1), _mm512_add_epi64(A1, B2)),
+                          _mm512_add_epi64(_mm512_add_epi64(A2, B3), _mm512_add_epi64(A3, B4))),
+        _mm512_xor_si512(_mm512_add_epi64(_mm512_add_epi64(A4, B5), _mm512_add_epi64(A5, B6)),
+                          _mm512_add_epi64(A6, B0)));
+    uint64_t rlo = f52_reduce(lo);
+    uint64_t rhi = f52_reduce(hi);
+    const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
+    uint64_t x = (rlo ^ f52_rotl(rhi, 17)) + sl;
+    uint64_t y = (rhi ^ f52_rotl(rlo, 23)) + f52_rotl(sl, 32);
+    f52_avalanche128_lm(x, y, F52_LM_ROT, &x, &y);
+    f52_avalanche64x2(x + sl, y + sl, &out[0], &out[1], 35, F52_P2, 28, 37, F52_P1, 32);
+}
+
+/* #undef the SIMD-only macros so they do not leak past this block. */
+#undef F52_MEDIUM_LOOP
+#undef F52_MLANE
+#undef F52_ACCUMULATE
+#undef F52_LOADU_MAX
+#undef F52_ACCUMULATE_WITH
+#undef F52_INIT
+#undef F52_OFFV
+#undef F52_TAIL7_32
+#undef F52_FINAL7
+#undef F52_PIPE7_32
+#undef F52_PIPE7
+#undef F52_BODY7
+#undef F52_BODY7_LANE
+#undef F52_CONSUME7
+#undef F52_LD14_32
+#undef F52_LD14
+#undef F52_AVX512_FN
+#undef F52_ROL512
+#undef F52_ROR512
+#undef F52_REG
+#undef F52_DEBUG_ZEROINIT
+
 #endif /* F52_HAVE_AVX512IFMA */
 
 /* ==================== scalar fallback (f52_v8: 8x u64, mirrors __m512i) ====================
@@ -951,7 +899,6 @@ static inline F52_AINLINE f52_v8 f52_v8_set1(const uint64_t x) {
 static inline F52_AINLINE f52_v8 f52_v8_zero(void) {
     f52_v8 r; int i; for (i = 0; i < 8; i++) r.v[i] = 0; return r;
 }
-/* 64B -> 8 lanes (4x rd128, no alignment concerns). */
 static inline F52_AINLINE f52_v8 f52_v8_load(const uint8_t * const p) {
     f52_v8 r;
     f52_rd128(p,      &r.v[0], &r.v[1]);
@@ -972,13 +919,12 @@ static inline F52_AINLINE f52_v8 f52_v8_srli(f52_v8 a, const int n) {
 static inline F52_AINLINE f52_v8 f52_v8_rol(f52_v8 a, const int n) {
     int i; for (i = 0; i < 8; i++) a.v[i] = f52_rotl(a.v[i], n); return a;
 }
-static inline F52_AINLINE uint64_t f52_v8_reduce(const f52_v8 a) {   /* XOR of 8 lanes */
+static inline F52_AINLINE uint64_t f52_v8_reduce(const f52_v8 a) {
     uint64_t x = 0; int i; for (i = 0; i < 8; i++) x ^= a.v[i]; return x;
 }
 
 /* per-lane mix (mirrors F52_BODY7_LANE/MLANE): A+=low52(A*B); B=ror12;
- * B+=High52((A>>12)*(B>>12)).  madd52lo needs no operand mask; madd52hi's &M52 collapses
- * to >>12 under the A>>12 / ror(B,12) usage. */
+ * B+=High52((A>>12)*(B>>12)). */
 static inline F52_AINLINE void f52_v8_mix(f52_v8 * const A, f52_v8 * const B) {
     int i;
     for (i = 0; i < 8; i++) {
@@ -991,7 +937,7 @@ static inline F52_AINLINE void f52_v8_mix(f52_v8 * const A, f52_v8 * const B) {
     }
 }
 
-/* per-lane avalanche_v (mirrors f52_avalanche_v): 64-bit srli/xor + 32-bit mullo. */
+/* per-lane avalanche (mirrors f52_avalanche_v): 64-bit srli/xor + 32-bit mullo. */
 static inline F52_AINLINE f52_v8 f52_v8_avalanche(f52_v8 x, const uint64_t magic, const unsigned s1, const unsigned s2) {
     const uint32_t m = (uint32_t)magic;
     int i;
@@ -1003,8 +949,7 @@ static inline F52_AINLINE f52_v8 f52_v8_avalanche(f52_v8 x, const uint64_t magic
     return x;
 }
 
-/* medium loop (97-895B) scalar core: load+seed+mix+cross-lane reduce, lane-equivalent to
- * F52_MEDIUM_LOOP. */
+/* medium loop (97-895B) scalar core, lane-equivalent to F52_MEDIUM_LOOP. */
 static void f52_medium_loop_scalar_core(const uint8_t * const input, const size_t len, const uint64_t seed,
                                         f52_v8 * const outRA, f52_v8 * const outRB) {
     const size_t nblocks = len >> 7;
@@ -1036,7 +981,6 @@ static void f52_medium_loop_scalar_core(const uint8_t * const input, const size_
         }
         f52_v8_mix(&LA[k], &LB[k]);
     }
-    /* cross-lane reduce (mirrors F52_MEDIUM_LOOP's switch; A/B cross over, alternating add/xor). */
     {
         f52_v8 ra = f52_v8_zero(), rb = f52_v8_zero();
         switch (nlanes) {
@@ -1076,20 +1020,16 @@ static void f52_medium128_loop_scalar(const uint8_t * const input, const size_t 
     RA = f52_v8_avalanche(RA, F52_P1, 37, 32);
     RB = f52_v8_avalanche(RB, F52_P2, 35, 28);
     const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
-    const uint64_t sh = f52_bswap64(sl);
+    const uint64_t sh = f52_bswap64(sl);   /* keep the two lanes asymmetric */
     uint64_t xlo = f52_v8_reduce(RA) + sl;
     uint64_t xhi = f52_v8_reduce(RB) + sh;
     f52_avalanche128_lm(xlo, xhi, F52_LM_ROT, &xlo, &xhi);
     f52_avalanche64x2(xlo + sl, xhi + sh, &out[0], &out[1], 35, F52_P2, 28, 37, F52_P1, 32);
 }
 
-/* long path (>=896B) scalar core: 14 accumulators + strip/tail, byte-equivalent to
- * F52_ACCUMULATE (including the tail's deliberate "refresh only the last ceil(remain/64)
- * 64B chunks, reuse the previous strip's prefix" choice). */
+/* long path (>=896B) scalar core, byte-equivalent to F52_ACCUMULATE. */
 static void f52_long_scalar_core(const uint8_t * const input, const size_t len, const uint64_t seed,
                                  f52_v8 outA[7], f52_v8 outB[7]) {
-    /* ceil(len/896): widen to u64 first (see F52_ACCUMULATE_WITH) so +895 cannot overflow
-     * on 32-bit. */
     const size_t n = (size_t)(((uint64_t)len + 895) / 896);
     f52_v8 A[7], B[7], d[14];
     size_t s, k; int i;
@@ -1102,12 +1042,12 @@ static void f52_long_scalar_core(const uint8_t * const input, const size_t len, 
             B[k].v[i] ^= f52_laneoff[i];
         }
     }
-    for (s = 0; s + 1 < n; s++) {                      /* n-1 full 896B strips */
+    for (s = 0; s + 1 < n; s++) {
         for (k = 0; k < 14; k++) d[k] = f52_v8_load(input + s * 896 + k * 64);
         for (k = 0; k < 7; k++) { A[k] = f52_v8_add(A[k], d[2 * k]); B[k] = f52_v8_add(B[k], d[2 * k + 1]); }
         for (k = 0; k < 7; k++) f52_v8_mix(&A[k], &B[k]);
     }
-    {                                                  /* tail */
+    {
         const size_t remain = len - (n - 1) * 896;
         const size_t nt = (remain + 63) / 64;
         const uint8_t * const pend = input + len;
@@ -1139,7 +1079,6 @@ static void f52_long128_scalar(const void * const key, const size_t len, const u
     f52_v8 A[7], B[7];
     assert(len >= 896);
     f52_long_scalar_core(input, len, seed, A, B);
-    /* lo/hi cross-reduce (byte-for-byte identical to the SIMD cross A/B) */
     const f52_v8 lo = f52_v8_add(
         f52_v8_xor(f52_v8_add(f52_v8_xor(A[0], B[1]), f52_v8_xor(A[1], B[2])),
                    f52_v8_add(f52_v8_xor(A[2], B[3]), f52_v8_xor(A[3], B[4]))),
@@ -1161,7 +1100,7 @@ static void f52_long128_scalar(const void * const key, const size_t len, const u
 
 #endif /* !F52_HAVE_AVX512IFMA */
 
-/* Public symbol dispatch: SIMD (_avx512) under F52_HAVE_AVX512IFMA, else scalar (_scalar). */
+/* Dispatch to the SIMD or scalar loop by F52_HAVE_AVX512IFMA. */
 #if F52_HAVE_AVX512IFMA
 #  define f52_medium64_loop  f52_medium64_loop_avx512
 #  define f52_medium128_loop f52_medium128_loop_avx512
@@ -1174,67 +1113,8 @@ static void f52_long128_scalar(const void * const key, const size_t len, const u
 #  define f52_long128        f52_long128_scalar
 #endif
 
-/* ---- 128-bit ---- */
+/* ---- entry points ---- */
 
-#if F52_HAVE_AVX512IFMA
-/* Long path for inputs >= 896B with AVX-512 */
-F52_AVX512_FN
-static void f52_long128_avx512(const void * const key, size_t len, uint64_t seed, uint64_t out[2]) {
-    const uint8_t * const input = (const uint8_t *)key;
-    assert(len >= 896);
-    const size_t f52_off = (uintptr_t)input & 63;
-    __m512i A0, A1, A2, A3, A4, A5, A6, B0, B1, B2, B3, B4, B5, B6;
-    __m512i d0, d1, d2, d3, d4, d5, d6, d7, d8, d9, d10, d11, d12, d13;
-    F52_INIT();
-    F52_ACCUMULATE();
-    /* cross A/B: lo uses xor-cross pairs, hi uses add-cross pairs — breaks the dA<->dB swap
-     * symmetry that separate A/B would otherwise have. */
-    __m512i lo = _mm512_add_epi64(
-        _mm512_xor_si512(_mm512_add_epi64(_mm512_xor_si512(A0, B1), _mm512_xor_si512(A1, B2)),
-                          _mm512_add_epi64(_mm512_xor_si512(A2, B3), _mm512_xor_si512(A3, B4))),
-        _mm512_xor_si512(_mm512_add_epi64(_mm512_xor_si512(A4, B5), _mm512_xor_si512(A5, B6)),
-                          _mm512_xor_si512(A6, B0)));
-    __m512i hi = _mm512_add_epi64(
-        _mm512_xor_si512(_mm512_add_epi64(_mm512_add_epi64(A0, B1), _mm512_add_epi64(A1, B2)),
-                          _mm512_add_epi64(_mm512_add_epi64(A2, B3), _mm512_add_epi64(A3, B4))),
-        _mm512_xor_si512(_mm512_add_epi64(_mm512_add_epi64(A4, B5), _mm512_add_epi64(A5, B6)),
-                          _mm512_add_epi64(A6, B0)));
-    uint64_t rlo = f52_reduce(lo);
-    uint64_t rhi = f52_reduce(hi);
-    /* asymmetric two-lane mix of rlo/rhi (both depend on all accumulators), then lm -> av64x2. */
-    const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
-    uint64_t x = (rlo ^ f52_rotl(rhi, 17)) + sl;
-    uint64_t y = (rhi ^ f52_rotl(rlo, 23)) + f52_rotl(sl, 32);
-    f52_avalanche128_lm(x, y, F52_LM_ROT, &x, &y);
-    f52_avalanche64x2(x + sl, y + sl, &out[0], &out[1], 35, F52_P2, 28, 37, F52_P1, 32);
-}
-
-/* These private SIMD macros are used only inside the long/medium loop; #undef them to keep
- * the outer scope clean. */
-#undef F52_MEDIUM_LOOP
-#undef F52_MLANE
-#undef F52_ACCUMULATE
-#undef F52_LOADU_MAX
-#undef F52_ACCUMULATE_WITH
-#undef F52_INIT
-#undef F52_OFFV
-#undef F52_TAIL7_32
-#undef F52_FINAL7
-#undef F52_PIPE7_32
-#undef F52_PIPE7
-#undef F52_BODY7
-#undef F52_BODY7_LANE
-#undef F52_CONSUME7
-#undef F52_LD14_32
-#undef F52_LD14
-#undef F52_AVX512_FN
-#undef F52_ROL512
-#undef F52_ROR512
-#undef F52_REG
-#undef F52_DEBUG_ZEROINIT
-#endif /* F52_HAVE_AVX512IFMA */
-
-/* 64-bit entry point. */
 static inline uint64_t fifty2hash64(const void * const key, const size_t len, const uint64_t seed) {
     const uint8_t * const input = (const uint8_t *)key;
     if (F52_LIKELY(len <= 8)) {
@@ -1256,9 +1136,7 @@ static inline uint64_t fifty2hash64(const void * const key, const size_t len, co
     return f52_long64(key, len, seed);
 }
 
-/* 128-bit entry point.  out[0] = low 64 (low half of the value), out[1] = high 64 (high
- * half); the input key is interpreted little-endian (like rd32/64/128).  Length dispatch:
- * <=16 / 17-96 / 97-895 / >=896. */
+/* out[0]=low 64, out[1]=high 64. */
 static inline void fifty2hash128(const void * const key, const size_t len, const uint64_t seed, uint64_t out[2]) {
     const uint8_t * const input = (const uint8_t *)key;
     if (F52_LIKELY(len <= 16)) {
@@ -1285,10 +1163,8 @@ static inline void fifty2hash128(const void * const key, const size_t len, const
 }
 #endif
 
-/* ---- internal macro cleanup: undef everything the consumer does not need, so the
- *      header leaves only F52_VERSION / F52_HAVE_AVX512IFMA and the two entry points.
- *      (All references were expanded during preprocessing, so this is behavior-neutral.
- *      #undef on a macro that is undefined on some configs, e.g. F52_GCC_LEGACY, is a no-op.) */
+/* #undef everything the consumer does not need, leaving only F52_VERSION /
+ * F52_HAVE_AVX512IFMA and the two entry points. */
 #ifdef F52_UNDEF_INLINE
 #  undef inline
 #  undef F52_UNDEF_INLINE
