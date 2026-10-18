@@ -97,6 +97,20 @@ count is n² / 2^65 ≈ 312.5; the observed counts (271-341) match.
 (lengths 0-7 injective, length 8 a full-width bijection) — so its first collisions
 appear at length 9. The 128-bit halves have no such property and collide at every length.
 
+Cross-length among lengths 6/7/8 (`fifty2hash64`):
+
+| pair | samples | expected | collisions |
+|---|---|---|---|
+| 6↔7 | 100G per length | 0 | 0 |
+| 6↔8 | 100G per length | 625 | 723 |
+| 7↔8 | 100G per length | 625 | 526 |
+| 6/7/8 merged | 100G per length | 1250 | 1249 |
+
+6↔7 is structurally 0 (both lengths injective over their union — see "integer
+bijections"); length 8 is a full-width bijection covering the whole output space, so
+it must collide with shorter lengths (n²/2^64 = 625 per pair). The merged row sorts
+all three lengths into one set: 1249 = 723 + 526.
+
 #### 128-bit
 
 Per length: 100G keys.
