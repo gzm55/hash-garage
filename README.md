@@ -115,19 +115,18 @@ all three lengths into one set: 1249 = 723 + 526.
 
 Per length: 100G keys.
 
-| variant | lengths | samples | **semi union collisions** |
+| variant | lengths | samples | **cross-length collisions** |
 |---|---|---|---|
 | `fifty2hash128` | 6/7/8/9/16/32/64/256/512/1024/4096 | 100G each | 0 |
 
-The **semi union collisions** above: candidates are collected within each single
-length, then the candidate sets of all lengths are merged and jointly sorted to find
-collisions (expected and observed: 0).
+All 11 lengths are merged into one set and jointly sorted, covering both same-length
+and cross-length collisions (expected and observed: 0).
 
 For a uniform 128-bit hash with n = 100G samples, the natural expected collision
 count per length is n²/2^129 ≈ 1.7e-17 — zero for every length > 16. Lengths <= 16
 are injective by construction (see "integer bijections"), so exactly 0 there; length
 16 is a full-width bijection that can only collide with a shorter length, and even
-that is ~0 at 100G samples. Hence the semi-union expectation is 0.
+that is ~0 at 100G samples. Hence the cross-length expectation is 0.
 
 ### Speed
 
