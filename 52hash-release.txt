@@ -1,0 +1,206 @@
+52hash — Release Notes
+=======================
+
+Version
+-------
+1 (F52_VERSION 1)
+
+Overview
+--------
+52hash is a non-cryptographic hash function built around the AVX-512 IFMA
+(52-bit integer fused multiply-add) instructions. It hashes data as a sequence of
+"data x data" multiplies plus additive seed/length mixing.
+
+It is designed for hash tables, deduplication, checksums and similar workloads.
+It is NOT a cryptographic hash: it is not collision-resistant against an
+adversary and must not be used for security purposes.
+
+Two widths are provided:
+
+  * fifty2hash64  — 64-bit output.
+  * fifty2hash128 — 128-bit output (out[0] = low 64, out[1] = high 64).
+
+The two share a mixing core but use different finalizers; the low 64 bits of the
+128-bit result are NOT the 64-bit result, so the two must not be substituted for
+one another.
+
+Requirements
+------------
+* Language: C99 or C++11 are the recommended minimums (header-only; single
+  include of 52hash.h). The static assert degrades gracefully on pre-C11 /
+  pre-C++11 compilers via a negative-array typedef fallback.
+
+  Compiler / standard matrix:
+
+      C99, C11            fully supported
+      C++11, C++14, C++17 fully supported
+      C++98               GCC / Clang only (stdint.h is an extension there).
+                          MSVC has no C++98 mode — its oldest /std is c++14.
+      C89 (strict ISO)    not supported: the hash needs 64-bit integers
+                          (uint64_t from <stdint.h>, ULL literals) — both C99.
+      C89 (GNU/Clang)     compiles via an `inline`-keyword fallback (undef'd at
+                          the end of the header), but still relies on the C99
+                          uint64_t / ULL extensions.
+
+* No external dependencies.
+* AVX-512 IFMA is optional:
+    - With AVX-512 IFMA: a SIMD path is used for the medium-loop (97-895 B) and
+      long (>=896 B) tiers.
+    - Without it: a portable scalar fallback (8 x u64 lanes) produces
+      bit-identical results.
+* Compilers: GCC, Clang, and MSVC (x64), plus 32-bit targets.
+
+API
+---
+    #include "hash-garage/52hash.h"
+
+    uint64_t fifty2hash64(const void * key, size_t len, uint64_t seed);
+
+    void fifty2hash128(const void * key, size_t len, uint64_t seed,
+                       uint64_t out[2]);
+
+Input is interpreted little-endian. Results are identical across the SIMD and
+scalar paths and across endianness.
+
+Length dispatch (fixed seed):
+    <=16 B      short
+    17-96 B     medium
+    97-895 B    medium loop
+    >=896 B     long
+
+For a fixed seed the short path is injective over the union of lengths 0-7
+(64-bit) / 0-15 (128-bit), and lengths 8 (64-bit) / 16 (128-bit) are full-width
+bijections. Because the full-width bijection covers the whole output space, no
+cross-length collision-freedom is guaranteed between shorter lengths and the
+full-width length.
+
+Portability
+-----------
+* 64x64 -> 128 multiply is selected per compiler: __int128 (GCC/Clang 64-bit),
+  _umul128 (MSVC x64), or a 32x32 decomposition (32-bit) — all bit-identical.
+* SIMD and scalar paths are verified bit-identical (see the differential test).
+* The SIMD core needs only AVX-512F + AVX-512IFMA (no AVX-512DQ / VBMI).
+* bswap, rotate, attributes, endianness and static asserts all have portable
+  F52_* wrappers.
+
+Verification codes
+------------------
+Self-test vectors (SMHasher verification values, compiled with -march=native on
+x86-64):
+
+    fifty2hash64  0x3C368934
+    fifty2hash128 0x13CC0E73
+    fifty2hash128l (low 64)  0xD59BFF80
+    fifty2hash128h (high 64) 0x219F29DF
+
+Performance
+-----------
+Measured single-threaded on one benchmark host:
+
+    CPU:      Intel(R) Xeon(R) Gold 5318Y @ 2.10 GHz (Ice Lake, AVX-512 IFMA)
+    Compiler: gcc 16.2.0, -O3 -march=native
+    Memory:   ~755 GB (not a limiting factor)
+
+Long keys (>=512 B), 64-bit output, SIMD path:
+
+    length   cycles    B/cycle
+     4 KiB     107       38.2
+    16 KiB     397       41.3
+    64 KiB    1736       37.7     (~79 GB/s at 2.10 GHz)
+
+Long keys, 128-bit output, SIMD path:
+
+    length   cycles    B/cycle
+     4 KiB     122       33.4
+    16 KiB     414       39.5
+    64 KiB    1760       37.2
+
+Bulk speed (262144-byte keys, SMHasher --test=SpeedBulk):
+
+    hash            aligned    misaligned   (B/cycle)
+    fifty2hash64      41.7        30.7
+    fifty2hash128     41.6        30.6
+    fifty2hash128l    41.6        30.6
+    fifty2hash128h    41.6        30.6
+
+    aligned:    64-byte-aligned key pointer (~83.5 GB/s @ 2.10 GHz).
+    misaligned: 1-7 byte offset (worst case shown, ~61.5 GB/s); the misaligned
+                path uses two 32B loads + a lane shuffle instead of one 64B load.
+
+Alignment sensitivity (bulk 262144-byte keys, 8-byte-aligned key pointer,
+offset mod 64; B/cycle and GB/s @ 2.10 GHz):
+
+    offset(mod64)      512-bit           256-bit (16 reg)     scalar
+          0        52.10 / 109.4       22.56 /  47.4      4.02 / 8.4
+          8        32.83 /  69.0       19.25 /  40.4      4.02 / 8.4
+         16        32.84 /  69.0       19.26 /  40.4      4.01 / 8.4
+         24        32.84 /  69.0       19.26 /  40.4      4.01 / 8.4
+         32        38.69 /  81.2       22.64 /  47.6      4.02 / 8.4
+         40        29.65 /  62.3       19.11 /  40.1      4.01 / 8.4
+         48        29.65 /  62.3       19.10 /  40.1      4.01 / 8.4
+         56        29.62 /  62.2       19.11 /  40.1      4.02 / 8.4
+
+    "256-bit (16 reg)" is the AVX-IFMA path under the 16-register simulation
+    (EVEX.256 + -ffixed-ymm16..31, bit-identical to the real VEX.256).
+
+    Two fast spots: offset 0 (one aligned 64B load) and offset 32 (two aligned
+    32B loads, no cache-line crossing). Every other 8-byte-aligned offset makes
+    one of the two 32B loads cross a 64B cache line. 512-bit is the most
+    sensitive (109 -> 62 GB/s worst case, -43%); 256-bit drops ~16%; scalar is
+    alignment-insensitive. Note offset 0 here is a true 64-byte-aligned pointer,
+    so it reads ~109 GB/s rather than the ~83.5 GB/s "aligned" row above (which
+    is not 64-byte aligned).
+
+Scalar fallback (no IFMA), 64-bit output:
+
+    length   cycles    B/cycle
+     4 KiB    1070       3.83
+    16 KiB    3849       4.26
+    64 KiB   15165       4.32     (~9.1 GB/s at 2.10 GHz)
+
+Short keys (0-16 B), SIMD path (throughput / latency in cycles):
+
+    width    len   throughput   latency
+     64-bit    0       8.1        15.6
+     64-bit    8       6.7        16.8
+     64-bit   16       6.2        12.7
+    128-bit    0      12.1        38.4
+    128-bit   16       9.8        38.8
+
+Numbers are best-of-N to suppress scheduler/frequency noise and will vary by
+CPU, compiler and input alignment.
+
+Quality
+-------
+Rated GOOD in the SMHasher test suite (all standard tests pass; the extra
+torture tests — Sparse / Avalanche / DiffDist / large keysets — are gated behind
+--extra). The hash is exercised across every length tier by the fixed test
+vectors and by a SIMD-vs-scalar differential test.
+
+License
+-------
+BSD 2-Clause License
+
+Copyright (c) 2026, the 52hash authors
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

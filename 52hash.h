@@ -45,7 +45,34 @@
 #  define F52_HAVE_AVX512IFMA 0
 #endif
 
-#if F52_HAVE_AVX512IFMA
+/* 256-bit AVX-IFMA (VEX.256, no AVX-512): GCC/Clang define __AVXIFMA__ under
+ * -mavxifma; MSVC needs F52_FORCE_AVXIFMA. */
+#if defined(__AVXIFMA__) || defined(F52_FORCE_AVXIFMA)
+#  define F52_HAVE_AVXIFMA 1
+#else
+#  define F52_HAVE_AVXIFMA 0
+#endif
+
+/* 3-way tier selection:
+ *   F52_USE_AVX512  : AVX-512 IFMA (512-bit, 32 regs)
+ *   F52_USE_AVXIFMA : 256-bit AVX-IFMA (VEX.256, 16 regs, client machines)
+ *   otherwise       : scalar fallback (bit-identical)
+ *
+ * F52_SIM_AVX512 (external): simulate a pure AVX-IFMA part (16 regs) for
+ * benchmarking — force the 256-bit backend with EVEX.256 (on an AVX-512 IFMA
+ * machine, -ffixed-ymm16..31 caps it to 16 regs; bit-identical to real VEX.256). */
+#ifdef F52_SIM_AVX512
+#  if !defined(__AVX512IFMA__)
+#    error "F52_SIM_AVX512 requires __AVX512IFMA__ (-march=native on an IFMA machine)"
+#  endif
+#  define F52_USE_AVX512   0
+#  define F52_USE_AVXIFMA  1
+#else
+#  define F52_USE_AVX512   F52_HAVE_AVX512IFMA
+#  define F52_USE_AVXIFMA   (F52_HAVE_AVXIFMA && !F52_HAVE_AVX512IFMA)
+#endif
+
+#if F52_USE_AVX512 || F52_USE_AVXIFMA
 #  include <immintrin.h>
 #endif
 
@@ -97,7 +124,7 @@
 
 /* GNU/Clang use function-level target(avx512f,avx512ifma)+noinline; MSVC relies on
  * TU-level /arch:AVX512 (no function target); legacy GCC drops the target. */
-#if F52_HAVE_AVX512IFMA
+#if F52_USE_AVX512
 #  if defined(_MSC_VER)
 #    define F52_AVX512_FN __declspec(noinline)
 #  elif defined(F52_GCC_LEGACY)
@@ -472,7 +499,7 @@ static inline void f52_medium128_scalar(const uint8_t * const p, const size_t le
 }
 
 /* ==================== SIMD (AVX-512 IFMA) ==================== */
-#if F52_HAVE_AVX512IFMA
+#if F52_USE_AVX512
 
 static inline F52_AINLINE __m512i f52_ld(const uint8_t * const p) {
     return _mm512_loadu_si512((const void *)p);
@@ -885,11 +912,11 @@ static void f52_long128_avx512(const void * const key, size_t len, uint64_t seed
 #undef F52_REG
 #undef F52_DEBUG_ZEROINIT
 
-#endif /* F52_HAVE_AVX512IFMA */
+#endif /* F52_USE_AVX512 */
 
 /* ==================== scalar fallback (f52_v8: 8x u64, mirrors __m512i) ====================
  * Compiled only when F52_HAVE_AVX512IFMA==0; bit-identical to the SIMD path. */
-#if !F52_HAVE_AVX512IFMA
+#if !F52_USE_AVX512 && !F52_USE_AVXIFMA
 
 typedef struct { uint64_t v[8]; } f52_v8;
 
@@ -1043,14 +1070,21 @@ static void f52_long_scalar_core(const uint8_t * const input, const size_t len, 
         }
     }
     for (s = 0; s + 1 < n; s++) {
-        for (k = 0; k < 14; k++) d[k] = f52_v8_load(input + s * 896 + k * 64);
-        for (k = 0; k < 7; k++) { A[k] = f52_v8_add(A[k], d[2 * k]); B[k] = f52_v8_add(B[k], d[2 * k + 1]); }
-        for (k = 0; k < 7; k++) f52_v8_mix(&A[k], &B[k]);
+        const uint8_t * const sp = input + s * 896;
+        /* fused add+mix: keep A[k]/B[k] live across the pass (no d[] staging) */
+        for (k = 0; k < 7; k++) {
+            A[k] = f52_v8_add(A[k], f52_v8_load(sp + (2 * k) * 64));
+            B[k] = f52_v8_add(B[k], f52_v8_load(sp + (2 * k + 1) * 64));
+            f52_v8_mix(&A[k], &B[k]);
+        }
     }
     {
         const size_t remain = len - (n - 1) * 896;
         const size_t nt = (remain + 63) / 64;
         const uint8_t * const pend = input + len;
+        /* reload the last consumed strip for the tail's prefix reuse */
+        if (n > 1)
+            for (k = 0; k < 14; k++) d[k] = f52_v8_load(input + (n - 2) * 896 + k * 64);
         for (k = 0; k < nt; k++) d[14 - nt + k] = f52_v8_load(pend - (nt - k) * 64);
         for (k = 0; k < 7; k++) { A[k] = f52_v8_add(A[k], d[2 * k]); B[k] = f52_v8_add(B[k], d[2 * k + 1]); }
         for (k = 0; k < 7; k++) f52_v8_mix(&A[k], &B[k]);
@@ -1098,14 +1132,456 @@ static void f52_long128_scalar(const void * const key, const size_t len, const u
     f52_avalanche64x2(x + sl, y + sl, &out[0], &out[1], 35, F52_P2, 28, 37, F52_P1, 32);
 }
 
-#endif /* !F52_HAVE_AVX512IFMA */
+#endif /* !F52_USE_AVX512 && !F52_USE_AVXIFMA */
 
-/* Dispatch to the SIMD or scalar loop by F52_HAVE_AVX512IFMA. */
-#if F52_HAVE_AVX512IFMA
+/* ---- 256-bit AVX-IFMA (F52_USE_AVXIFMA): each 512-bit 8-lane vector splits into
+ * lo(0-3)/hi(4-7) two 4-lane halves. ---- */
+#if F52_USE_AVXIFMA
+/* 256-bit functions stay standalone (noinline) so -ffixed register pressure
+ * applies to them directly. */
+#define F52_AVXIFMA_FN __attribute__((noinline))
+
+/* ---- 256-bit helpers ---- */
+
+static inline F52_AINLINE __m256i f52_ld256lo(const uint8_t * const p) {
+    return _mm256_loadu_si256((const __m256i *)p);
+}
+static inline F52_AINLINE __m256i f52_ld256hi(const uint8_t * const p) {
+    return _mm256_loadu_si256((const __m256i *)(p + 32));
+}
+
+/* 256-bit rotate: _mm256_rol/ror_epi64 need AVX512VL, so shift+or (AVX2) instead. */
+#define F52_ROL256(x, n) _mm256_or_si256(_mm256_slli_epi64((x), (n)), _mm256_srli_epi64((x), 64 - (n)))
+#define F52_ROR256(x, n) _mm256_or_si256(_mm256_srli_epi64((x), (n)), _mm256_slli_epi64((x), 64 - (n)))
+
+/* 4-lane horizontal XOR -> 1 u64. */
+static inline F52_AINLINE F52_CONST uint64_t f52_reduce256(__m256i a) {
+    __m128i lo = _mm256_castsi256_si128(a);
+    __m128i hi = _mm256_extracti128_si256(a, 1);
+    return (uint64_t)_mm_extract_epi64(lo, 0) ^ (uint64_t)_mm_extract_epi64(lo, 1)
+         ^ (uint64_t)_mm_extract_epi64(hi, 0) ^ (uint64_t)_mm_extract_epi64(hi, 1);
+}
+
+/* per-lane avalanche: 32x32->32 mullo (AVX2). */
+static inline F52_AINLINE F52_CONST __m256i f52_avalanche_v256(__m256i x, const uint64_t magic, const int s1, const int s2) {
+    x = _mm256_xor_si256(x, _mm256_srli_epi64(x, s1));
+    x = _mm256_mullo_epi32(x, _mm256_set1_epi32((int)(uint32_t)magic));
+    x = _mm256_xor_si256(x, _mm256_srli_epi64(x, s2));
+    return x;
+}
+
+static inline F52_AINLINE F52_CONST __m256i f52_seed_vector256(const uint64_t seed, const uint64_t k, const __m256i ov) {
+    return _mm256_xor_si256(_mm256_set1_epi64x((int64_t)(seed + F52_P2 * (k + 1))), ov);
+}
+
+/* laneoff table (static array in the main header): low 4 lanes = f52_laneoff[0..3],
+ * high 4 = [4..7]. */
+#define F52_OFFV_LO() _mm256_loadu_si256((const __m256i *)f52_laneoff)
+#define F52_OFFV_HI() _mm256_loadu_si256((const __m256i *)(f52_laneoff + 4))
+
+/* ---- long path (>=896B), 256-bit. Each 512-bit 8-lane vector splits into
+ * lo(0-3)/hi(4-7). ---- */
+
+/* initialize 14 accumulator pairs (7 A + 7 B), each pair = lo/hi two ymm. */
+#define F52_INIT_256() \
+    do { \
+        __m256i f52_ovl = F52_OFFV_LO(), f52_ovh = F52_OFFV_HI(); \
+        A0l = f52_seed_vector256(seed, 0,  f52_ovl); A0h = f52_seed_vector256(seed, 0,  f52_ovh); \
+        B0l = f52_seed_vector256(seed, 1,  f52_ovl); B0h = f52_seed_vector256(seed, 1,  f52_ovh); \
+        A1l = f52_seed_vector256(seed, 2,  f52_ovl); A1h = f52_seed_vector256(seed, 2,  f52_ovh); \
+        B1l = f52_seed_vector256(seed, 3,  f52_ovl); B1h = f52_seed_vector256(seed, 3,  f52_ovh); \
+        A2l = f52_seed_vector256(seed, 4,  f52_ovl); A2h = f52_seed_vector256(seed, 4,  f52_ovh); \
+        B2l = f52_seed_vector256(seed, 5,  f52_ovl); B2h = f52_seed_vector256(seed, 5,  f52_ovh); \
+        A3l = f52_seed_vector256(seed, 6,  f52_ovl); A3h = f52_seed_vector256(seed, 6,  f52_ovh); \
+        B3l = f52_seed_vector256(seed, 7,  f52_ovl); B3h = f52_seed_vector256(seed, 7,  f52_ovh); \
+        A4l = f52_seed_vector256(seed, 8,  f52_ovl); A4h = f52_seed_vector256(seed, 8,  f52_ovh); \
+        B4l = f52_seed_vector256(seed, 9,  f52_ovl); B4h = f52_seed_vector256(seed, 9,  f52_ovh); \
+        A5l = f52_seed_vector256(seed, 10, f52_ovl); A5h = f52_seed_vector256(seed, 10, f52_ovh); \
+        B5l = f52_seed_vector256(seed, 11, f52_ovl); B5h = f52_seed_vector256(seed, 11, f52_ovh); \
+        A6l = f52_seed_vector256(seed, 12, f52_ovl); A6h = f52_seed_vector256(seed, 12, f52_ovh); \
+        B6l = f52_seed_vector256(seed, 13, f52_ovl); B6h = f52_seed_vector256(seed, 13, f52_ovh); \
+    } while (0)
+
+/* 14 x 64B chunks, each split into lo/hi two 32B. */
+#define F52_LD14_256(p) \
+    do { \
+        d0l = f52_ld256lo((p));        d0h = f52_ld256hi((p));        \
+        d1l = f52_ld256lo((p) + 64);   d1h = f52_ld256hi((p) + 64);   \
+        d2l = f52_ld256lo((p) + 128);  d2h = f52_ld256hi((p) + 128);  \
+        d3l = f52_ld256lo((p) + 192);  d3h = f52_ld256hi((p) + 192);  \
+        d4l = f52_ld256lo((p) + 256);  d4h = f52_ld256hi((p) + 256);  \
+        d5l = f52_ld256lo((p) + 320);  d5h = f52_ld256hi((p) + 320);  \
+        d6l = f52_ld256lo((p) + 384);  d6h = f52_ld256hi((p) + 384);  \
+        d7l = f52_ld256lo((p) + 448);  d7h = f52_ld256hi((p) + 448);  \
+        d8l = f52_ld256lo((p) + 512);  d8h = f52_ld256hi((p) + 512);  \
+        d9l = f52_ld256lo((p) + 576);  d9h = f52_ld256hi((p) + 576);  \
+        d10l = f52_ld256lo((p) + 640); d10h = f52_ld256hi((p) + 640); \
+        d11l = f52_ld256lo((p) + 704); d11h = f52_ld256hi((p) + 704); \
+        d12l = f52_ld256lo((p) + 768); d12h = f52_ld256hi((p) + 768); \
+        d13l = f52_ld256lo((p) + 832); d13h = f52_ld256hi((p) + 832); \
+    } while (0)
+
+#define F52_CONSUME7_256() \
+    do { \
+        A0l = _mm256_add_epi64(A0l, d0l);  A0h = _mm256_add_epi64(A0h, d0h); \
+        B0l = _mm256_add_epi64(B0l, d1l);  B0h = _mm256_add_epi64(B0h, d1h); \
+        A1l = _mm256_add_epi64(A1l, d2l);  A1h = _mm256_add_epi64(A1h, d2h); \
+        B1l = _mm256_add_epi64(B1l, d3l);  B1h = _mm256_add_epi64(B1h, d3h); \
+        A2l = _mm256_add_epi64(A2l, d4l);  A2h = _mm256_add_epi64(A2h, d4h); \
+        B2l = _mm256_add_epi64(B2l, d5l);  B2h = _mm256_add_epi64(B2h, d5h); \
+        A3l = _mm256_add_epi64(A3l, d6l);  A3h = _mm256_add_epi64(A3h, d6h); \
+        B3l = _mm256_add_epi64(B3l, d7l);  B3h = _mm256_add_epi64(B3h, d7h); \
+        A4l = _mm256_add_epi64(A4l, d8l);  A4h = _mm256_add_epi64(A4h, d8h); \
+        B4l = _mm256_add_epi64(B4l, d9l);  B4h = _mm256_add_epi64(B4h, d9h); \
+        A5l = _mm256_add_epi64(A5l, d10l); A5h = _mm256_add_epi64(A5h, d10h); \
+        B5l = _mm256_add_epi64(B5l, d11l); B5h = _mm256_add_epi64(B5h, d11h); \
+        A6l = _mm256_add_epi64(A6l, d12l); A6h = _mm256_add_epi64(A6h, d12h); \
+        B6l = _mm256_add_epi64(B6l, d13l); B6h = _mm256_add_epi64(B6h, d13h); \
+    } while (0)
+
+/* mix one (Al,Ah,Bl,Bh) pair: lo/hi madd52 independently. */
+#define F52_BODY_PAIR_256(Al, Ah, Bl, Bh) \
+    { __m256i f52_sAl = _mm256_srli_epi64(Al, 12); \
+      __m256i f52_sAh = _mm256_srli_epi64(Ah, 12); \
+      Al = _mm256_madd52lo_epu64(Al, Al, Bl); \
+      Ah = _mm256_madd52lo_epu64(Ah, Ah, Bh); \
+      Bl = F52_ROR256(Bl, 12); \
+      Bh = F52_ROR256(Bh, 12); \
+      Bl = _mm256_madd52hi_epu64(Bl, f52_sAl, Bl); \
+      Bh = _mm256_madd52hi_epu64(Bh, f52_sAh, Bh); }
+
+#define F52_BODY7_256() \
+    do { \
+        F52_BODY_PAIR_256(A0l, A0h, B0l, B0h) \
+        F52_BODY_PAIR_256(A1l, A1h, B1l, B1h) \
+        F52_BODY_PAIR_256(A2l, A2h, B2l, B2h) \
+        F52_BODY_PAIR_256(A3l, A3h, B3l, B3h) \
+        F52_BODY_PAIR_256(A4l, A4h, B4l, B4h) \
+        F52_BODY_PAIR_256(A5l, A5h, B5l, B5h) \
+        F52_BODY_PAIR_256(A6l, A6h, B6l, B6h) \
+    } while (0)
+
+/* tail: load only the last ceil(remain/64) fresh 64B chunks (lo/hi), reuse the
+ * previous strip's prefix. */
+#define F52_TAIL7_256(pend, k) \
+    do { \
+        switch (k) { \
+            case 14: d0l  = f52_ld256lo((pend) - 896); d0h  = f52_ld256hi((pend) - 896);  /* fallthrough */ \
+            case 13: d1l  = f52_ld256lo((pend) - 832); d1h  = f52_ld256hi((pend) - 832);  /* fallthrough */ \
+            case 12: d2l  = f52_ld256lo((pend) - 768); d2h  = f52_ld256hi((pend) - 768);  /* fallthrough */ \
+            case 11: d3l  = f52_ld256lo((pend) - 704); d3h  = f52_ld256hi((pend) - 704);  /* fallthrough */ \
+            case 10: d4l  = f52_ld256lo((pend) - 640); d4h  = f52_ld256hi((pend) - 640);  /* fallthrough */ \
+            case 9:  d5l  = f52_ld256lo((pend) - 576); d5h  = f52_ld256hi((pend) - 576);  /* fallthrough */ \
+            case 8:  d6l  = f52_ld256lo((pend) - 512); d6h  = f52_ld256hi((pend) - 512);  /* fallthrough */ \
+            case 7:  d7l  = f52_ld256lo((pend) - 448); d7h  = f52_ld256hi((pend) - 448);  /* fallthrough */ \
+            case 6:  d8l  = f52_ld256lo((pend) - 384); d8h  = f52_ld256hi((pend) - 384);  /* fallthrough */ \
+            case 5:  d9l  = f52_ld256lo((pend) - 320); d9h  = f52_ld256hi((pend) - 320);  /* fallthrough */ \
+            case 4:  d10l = f52_ld256lo((pend) - 256); d10h = f52_ld256hi((pend) - 256);  /* fallthrough */ \
+            case 3:  d11l = f52_ld256lo((pend) - 192); d11h = f52_ld256hi((pend) - 192);  /* fallthrough */ \
+            case 2:  d12l = f52_ld256lo((pend) - 128); d12h = f52_ld256hi((pend) - 128);  /* fallthrough */ \
+            case 1:  d13l = f52_ld256lo((pend) - 64);  d13h = f52_ld256hi((pend) - 64);   /* fallthrough */ \
+            default: break; \
+        } \
+        F52_CONSUME7_256(); \
+        F52_BODY7_256(); \
+    } while (0)
+
+/* Streaming load+consume: load folds into add (vpaddq ymm,ymm,[mem]); no software
+ * prefetch — the HW prefetcher hides memory latency. Loads grouped L L H H (each
+ * pair's two low halves then two high halves) so adjacent loads stay compact.
+ * Live set 56 -> ~32 ymm, so spilling drops sharply under 16 regs. */
+#define F52_LD_CONSUME7_256(p) \
+    do { \
+        A0l = _mm256_add_epi64(A0l, f52_ld256lo((p) + 0)); \
+        B0l = _mm256_add_epi64(B0l, f52_ld256lo((p) + 64)); \
+        A0h = _mm256_add_epi64(A0h, f52_ld256hi((p) + 0)); \
+        B0h = _mm256_add_epi64(B0h, f52_ld256hi((p) + 64)); \
+        A1l = _mm256_add_epi64(A1l, f52_ld256lo((p) + 128)); \
+        B1l = _mm256_add_epi64(B1l, f52_ld256lo((p) + 192)); \
+        A1h = _mm256_add_epi64(A1h, f52_ld256hi((p) + 128)); \
+        B1h = _mm256_add_epi64(B1h, f52_ld256hi((p) + 192)); \
+        A2l = _mm256_add_epi64(A2l, f52_ld256lo((p) + 256)); \
+        B2l = _mm256_add_epi64(B2l, f52_ld256lo((p) + 320)); \
+        A2h = _mm256_add_epi64(A2h, f52_ld256hi((p) + 256)); \
+        B2h = _mm256_add_epi64(B2h, f52_ld256hi((p) + 320)); \
+        A3l = _mm256_add_epi64(A3l, f52_ld256lo((p) + 384)); \
+        B3l = _mm256_add_epi64(B3l, f52_ld256lo((p) + 448)); \
+        A3h = _mm256_add_epi64(A3h, f52_ld256hi((p) + 384)); \
+        B3h = _mm256_add_epi64(B3h, f52_ld256hi((p) + 448)); \
+        A4l = _mm256_add_epi64(A4l, f52_ld256lo((p) + 512)); \
+        B4l = _mm256_add_epi64(B4l, f52_ld256lo((p) + 576)); \
+        A4h = _mm256_add_epi64(A4h, f52_ld256hi((p) + 512)); \
+        B4h = _mm256_add_epi64(B4h, f52_ld256hi((p) + 576)); \
+        A5l = _mm256_add_epi64(A5l, f52_ld256lo((p) + 640)); \
+        B5l = _mm256_add_epi64(B5l, f52_ld256lo((p) + 704)); \
+        A5h = _mm256_add_epi64(A5h, f52_ld256hi((p) + 640)); \
+        B5h = _mm256_add_epi64(B5h, f52_ld256hi((p) + 704)); \
+        A6l = _mm256_add_epi64(A6l, f52_ld256lo((p) + 768)); \
+        B6l = _mm256_add_epi64(B6l, f52_ld256lo((p) + 832)); \
+        A6h = _mm256_add_epi64(A6h, f52_ld256hi((p) + 768)); \
+        B6h = _mm256_add_epi64(B6h, f52_ld256hi((p) + 832)); \
+    } while (0)
+
+#define F52_ACCUMULATE_256() \
+    do { \
+        size_t f52_i, f52_n; \
+        f52_n = (size_t)(((uint64_t)len + 895) / 896); \
+        if (f52_n == 1) { \
+            F52_LD_CONSUME7_256(input); \
+            F52_BODY7_256(); \
+        } else { \
+            for (f52_i = 0; f52_i + 1 < f52_n - 1; f52_i++) { \
+                F52_LD_CONSUME7_256(input + f52_i * 896); \
+                F52_BODY7_256(); \
+            } \
+            F52_LD14_256(input + (f52_n - 2) * 896); \
+            F52_CONSUME7_256(); \
+            F52_BODY7_256(); \
+            F52_TAIL7_256(input + len, (len - (f52_n - 1) * 896 + 63) / 64); \
+        } \
+    } while (0)
+
+/* ---- medium loop [97,896B), 256-bit. ---- */
+
+/* unified MLANE: load folds into add (vpaddq ymm,ymm,[mem]); pA always valid, pB
+ * may be NULL (tail<64 -> td1=zero, so B keeps only seed_vector). */
+#define F52_MLANE_256_PTR(Al, Ah, Bl, Bh, k, pA, pB, ovl, ovh) \
+    do { \
+        Al = f52_seed_vector256(seed, 2 * (k),     ovl); \
+        Ah = f52_seed_vector256(seed, 2 * (k),     ovh); \
+        Bl = f52_seed_vector256(seed, 2 * (k) + 1, ovl); \
+        Bh = f52_seed_vector256(seed, 2 * (k) + 1, ovh); \
+        Al = _mm256_add_epi64(Al, f52_ld256lo(pA)); \
+        Ah = _mm256_add_epi64(Ah, f52_ld256hi(pA)); \
+        if (pB) { Bl = _mm256_add_epi64(Bl, f52_ld256lo(pB)); Bh = _mm256_add_epi64(Bh, f52_ld256hi(pB)); } \
+        { __m256i f52_sAl = _mm256_srli_epi64(Al, 12); \
+          __m256i f52_sAh = _mm256_srli_epi64(Ah, 12); \
+          Al = _mm256_madd52lo_epu64(Al, Al, Bl); \
+          Ah = _mm256_madd52lo_epu64(Ah, Ah, Bh); \
+          Bl = F52_ROR256(Bl, 12); \
+          Bh = F52_ROR256(Bh, 12); \
+          Bl = _mm256_madd52hi_epu64(Bl, f52_sAl, Bl); \
+          Bh = _mm256_madd52hi_epu64(Bh, f52_sAh, Bh); } \
+    } while (0)
+
+/* incremental reduce: fold in the fixed descending lane order (6->0), peak 28 ->
+ * ~8 ymm. MLANEs stay independent (OOO-parallel); only the 7-step reduce chain is
+ * a serial dependency. */
+#define F52_MEDIUM_LOOP_256(outAl, outAh, outBl, outBh) \
+    do { \
+        size_t f52_nblocks = len >> 7; \
+        size_t f52_tail = len & 127; \
+        size_t f52_nlanes = f52_nblocks + (f52_tail ? 1 : 0); \
+        __m256i f52_RAl = _mm256_setzero_si256(), f52_RAh = _mm256_setzero_si256(); \
+        __m256i f52_RBl = _mm256_setzero_si256(), f52_RBh = _mm256_setzero_si256(); \
+        __m256i f52_ovl = F52_OFFV_LO(), f52_ovh = F52_OFFV_HI(); \
+        const uint8_t *f52_p0 = input + len - 64; \
+        const uint8_t *f52_p1 = (f52_tail >= 64) ? (input + (f52_nblocks << 7)) : NULL; \
+        if (f52_nlanes >= 7) { \
+            __m256i f52_Al, f52_Ah, f52_Bl, f52_Bh; \
+            F52_MLANE_256_PTR(f52_Al, f52_Ah, f52_Bl, f52_Bh, 6, f52_p0, f52_p1, f52_ovl, f52_ovh); \
+            f52_RAl = _mm256_add_epi64(f52_RAl, F52_ROL256(f52_Al, 53)); \
+            f52_RAh = _mm256_add_epi64(f52_RAh, F52_ROL256(f52_Ah, 53)); \
+            f52_RBl = _mm256_add_epi64(f52_RBl, F52_ROL256(f52_Bl, 53)); \
+            f52_RBh = _mm256_add_epi64(f52_RBh, F52_ROL256(f52_Bh, 53)); \
+        } \
+        if (f52_nlanes >= 6) { \
+            __m256i f52_Al, f52_Ah, f52_Bl, f52_Bh; \
+            const uint8_t *f52_a = (f52_nblocks >= 6) ? (input + 640) : f52_p0; \
+            const uint8_t *f52_b = (f52_nblocks >= 6) ? (input + 704) : f52_p1; \
+            F52_MLANE_256_PTR(f52_Al, f52_Ah, f52_Bl, f52_Bh, 5, f52_a, f52_b, f52_ovl, f52_ovh); \
+            f52_RAl = _mm256_xor_si256(f52_RAl, F52_ROL256(f52_Bl, 37)); \
+            f52_RAh = _mm256_xor_si256(f52_RAh, F52_ROL256(f52_Bh, 37)); \
+            f52_RBl = _mm256_xor_si256(f52_RBl, F52_ROL256(f52_Al, 37)); \
+            f52_RBh = _mm256_xor_si256(f52_RBh, F52_ROL256(f52_Ah, 37)); \
+        } \
+        if (f52_nlanes >= 5) { \
+            __m256i f52_Al, f52_Ah, f52_Bl, f52_Bh; \
+            const uint8_t *f52_a = (f52_nblocks >= 5) ? (input + 512) : f52_p0; \
+            const uint8_t *f52_b = (f52_nblocks >= 5) ? (input + 576) : f52_p1; \
+            F52_MLANE_256_PTR(f52_Al, f52_Ah, f52_Bl, f52_Bh, 4, f52_a, f52_b, f52_ovl, f52_ovh); \
+            f52_RAl = _mm256_add_epi64(f52_RAl, F52_ROL256(f52_Al, 13)); \
+            f52_RAh = _mm256_add_epi64(f52_RAh, F52_ROL256(f52_Ah, 13)); \
+            f52_RBl = _mm256_add_epi64(f52_RBl, F52_ROL256(f52_Bl, 13)); \
+            f52_RBh = _mm256_add_epi64(f52_RBh, F52_ROL256(f52_Bh, 13)); \
+        } \
+        if (f52_nlanes >= 4) { \
+            __m256i f52_Al, f52_Ah, f52_Bl, f52_Bh; \
+            const uint8_t *f52_a = (f52_nblocks >= 4) ? (input + 384) : f52_p0; \
+            const uint8_t *f52_b = (f52_nblocks >= 4) ? (input + 448) : f52_p1; \
+            F52_MLANE_256_PTR(f52_Al, f52_Ah, f52_Bl, f52_Bh, 3, f52_a, f52_b, f52_ovl, f52_ovh); \
+            f52_RAl = _mm256_xor_si256(f52_RAl, F52_ROL256(f52_Bl, 51)); \
+            f52_RAh = _mm256_xor_si256(f52_RAh, F52_ROL256(f52_Bh, 51)); \
+            f52_RBl = _mm256_xor_si256(f52_RBl, F52_ROL256(f52_Al, 51)); \
+            f52_RBh = _mm256_xor_si256(f52_RBh, F52_ROL256(f52_Ah, 51)); \
+        } \
+        if (f52_nlanes >= 3) { \
+            __m256i f52_Al, f52_Ah, f52_Bl, f52_Bh; \
+            const uint8_t *f52_a = (f52_nblocks >= 3) ? (input + 256) : f52_p0; \
+            const uint8_t *f52_b = (f52_nblocks >= 3) ? (input + 320) : f52_p1; \
+            F52_MLANE_256_PTR(f52_Al, f52_Ah, f52_Bl, f52_Bh, 2, f52_a, f52_b, f52_ovl, f52_ovh); \
+            f52_RAl = _mm256_add_epi64(f52_RAl, F52_ROL256(f52_Al, 34)); \
+            f52_RAh = _mm256_add_epi64(f52_RAh, F52_ROL256(f52_Ah, 34)); \
+            f52_RBl = _mm256_add_epi64(f52_RBl, F52_ROL256(f52_Bl, 34)); \
+            f52_RBh = _mm256_add_epi64(f52_RBh, F52_ROL256(f52_Bh, 34)); \
+        } \
+        if (f52_nlanes >= 2) { \
+            __m256i f52_Al, f52_Ah, f52_Bl, f52_Bh; \
+            const uint8_t *f52_a = (f52_nblocks >= 2) ? (input + 128) : f52_p0; \
+            const uint8_t *f52_b = (f52_nblocks >= 2) ? (input + 192) : f52_p1; \
+            F52_MLANE_256_PTR(f52_Al, f52_Ah, f52_Bl, f52_Bh, 1, f52_a, f52_b, f52_ovl, f52_ovh); \
+            f52_RAl = _mm256_xor_si256(f52_RAl, F52_ROL256(f52_Bl, 17)); \
+            f52_RAh = _mm256_xor_si256(f52_RAh, F52_ROL256(f52_Bh, 17)); \
+            f52_RBl = _mm256_xor_si256(f52_RBl, F52_ROL256(f52_Al, 17)); \
+            f52_RBh = _mm256_xor_si256(f52_RBh, F52_ROL256(f52_Ah, 17)); \
+        } \
+        { \
+            __m256i f52_Al, f52_Ah, f52_Bl, f52_Bh; \
+            const uint8_t *f52_a = (f52_nblocks >= 1) ? (input + 0) : f52_p0; \
+            const uint8_t *f52_b = (f52_nblocks >= 1) ? (input + 64) : f52_p1; \
+            F52_MLANE_256_PTR(f52_Al, f52_Ah, f52_Bl, f52_Bh, 0, f52_a, f52_b, f52_ovl, f52_ovh); \
+            f52_RAl = _mm256_add_epi64(f52_RAl, f52_Al); \
+            f52_RAh = _mm256_add_epi64(f52_RAh, f52_Ah); \
+            f52_RBl = _mm256_add_epi64(f52_RBl, f52_Bl); \
+            f52_RBh = _mm256_add_epi64(f52_RBh, f52_Bh); \
+        } \
+        (outAl) = f52_avalanche_v256(f52_RAl, F52_P1, 37, 32); \
+        (outAh) = f52_avalanche_v256(f52_RAh, F52_P1, 37, 32); \
+        (outBl) = f52_avalanche_v256(f52_RBl, F52_P2, 35, 28); \
+        (outBh) = f52_avalanche_v256(f52_RBh, F52_P2, 35, 28); \
+    } while (0)
+
+/* ---- 128-bit long cross-pair combine (lo xor-cross, hi add-cross, breaks the
+ * dA<->dB swap symmetry). ---- */
+
+#define F52_CROSS_LO_256(A0, A1, A2, A3, A4, A5, A6, B0, B1, B2, B3, B4, B5, B6) \
+    _mm256_add_epi64( \
+        _mm256_xor_si256(_mm256_add_epi64(_mm256_xor_si256((A0), (B1)), _mm256_xor_si256((A1), (B2))), \
+                          _mm256_add_epi64(_mm256_xor_si256((A2), (B3)), _mm256_xor_si256((A3), (B4)))), \
+        _mm256_xor_si256(_mm256_add_epi64(_mm256_xor_si256((A4), (B5)), _mm256_xor_si256((A5), (B6))), \
+                          _mm256_xor_si256((A6), (B0))))
+
+#define F52_CROSS_HI_256(A0, A1, A2, A3, A4, A5, A6, B0, B1, B2, B3, B4, B5, B6) \
+    _mm256_add_epi64( \
+        _mm256_xor_si256(_mm256_add_epi64(_mm256_add_epi64((A0), (B1)), _mm256_add_epi64((A1), (B2))), \
+                          _mm256_add_epi64(_mm256_add_epi64((A2), (B3)), _mm256_add_epi64((A3), (B4)))), \
+        _mm256_xor_si256(_mm256_add_epi64(_mm256_add_epi64((A4), (B5)), _mm256_add_epi64((A5), (B6))), \
+                          _mm256_add_epi64((A6), (B0))))
+
+/* ---- 64-bit medium loop (97-895B). ---- */
+F52_AVXIFMA_FN
+static uint64_t f52_medium64_loop_avxifma(const uint8_t * const input, size_t len, uint64_t seed) {
+    __m256i f52_MA_l, f52_MA_h, f52_MB_l, f52_MB_h;
+    assert(len >= 97 && len < 896);
+#if defined(__GNUC__) && !defined(__clang__)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+    F52_MEDIUM_LOOP_256(f52_MA_l, f52_MA_h, f52_MB_l, f52_MB_h);
+#if defined(__GNUC__) && !defined(__clang__)
+    #pragma GCC diagnostic pop
+#endif
+    __m256i suml = _mm256_xor_si256(
+        _mm256_xor_si256(f52_MA_l, f52_MB_l),
+        _mm256_xor_si256(_mm256_srli_epi64(f52_MA_l, 32), _mm256_srli_epi64(f52_MB_l, 32)));
+    __m256i sumh = _mm256_xor_si256(
+        _mm256_xor_si256(f52_MA_h, f52_MB_h),
+        _mm256_xor_si256(_mm256_srli_epi64(f52_MA_h, 32), _mm256_srli_epi64(f52_MB_h, 32)));
+    uint64_t h = f52_reduce256(_mm256_xor_si256(suml, sumh));
+    const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
+    h = f52_avalanche64_sms(h + sl, 32, F52_P3, F52_SKIP_SHIFT);
+    h = f52_avalanche64_sms(h + sl, 34, F52_P3, 22);
+    return h;
+}
+
+/* ---- 128-bit medium loop (97-895B). ---- */
+F52_AVXIFMA_FN
+static void f52_medium128_loop_avxifma(const uint8_t * const input, size_t len, uint64_t seed,
+                                       uint64_t out[2]) {
+    __m256i f52_MA_l, f52_MA_h, f52_MB_l, f52_MB_h;
+    assert(len >= 97 && len < 896);
+#if defined(__GNUC__) && !defined(__clang__)
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+    F52_MEDIUM_LOOP_256(f52_MA_l, f52_MA_h, f52_MB_l, f52_MB_h);
+#if defined(__GNUC__) && !defined(__clang__)
+    #pragma GCC diagnostic pop
+#endif
+    const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
+    const uint64_t sh = f52_bswap64(sl);   /* keep the two lanes asymmetric */
+    uint64_t xlo = (f52_reduce256(f52_MA_l) ^ f52_reduce256(f52_MA_h)) + sl;
+    uint64_t xhi = (f52_reduce256(f52_MB_l) ^ f52_reduce256(f52_MB_h)) + sh;
+    f52_avalanche128_lm(xlo, xhi, F52_LM_ROT, &xlo, &xhi);
+    f52_avalanche64x2(xlo + sl, xhi + sh, &out[0], &out[1], 35, F52_P2, 28, 37, F52_P1, 32);
+}
+
+/* ---- 64-bit long path (>=896B). ---- */
+F52_AVXIFMA_FN
+static uint64_t f52_long64_avxifma(const void * const key, size_t len, uint64_t seed) {
+    const uint8_t * const input = (const uint8_t *)key;
+    assert(len >= 896);
+    __m256i A0l, A0h, A1l, A1h, A2l, A2h, A3l, A3h, A4l, A4h, A5l, A5h, A6l, A6h;
+    __m256i B0l, B0h, B1l, B1h, B2l, B2h, B3l, B3h, B4l, B4h, B5l, B5h, B6l, B6h;
+    __m256i d0l, d0h, d1l, d1h, d2l, d2h, d3l, d3h, d4l, d4h, d5l, d5h, d6l, d6h;
+    __m256i d7l, d7h, d8l, d8h, d9l, d9h, d10l, d10h, d11l, d11h, d12l, d12h, d13l, d13h;
+    F52_INIT_256();
+    F52_ACCUMULATE_256();
+    __m256i sum = _mm256_xor_si256(
+        _mm256_xor_si256(_mm256_xor_si256(A0l, A0h), _mm256_xor_si256(A1l, A1h)),
+        _mm256_xor_si256(_mm256_xor_si256(A2l, A2h), _mm256_xor_si256(A3l, A3h)));
+    sum = _mm256_xor_si256(sum,
+        _mm256_xor_si256(_mm256_xor_si256(A4l, A4h), _mm256_xor_si256(A5l, A5h)));
+    sum = _mm256_xor_si256(sum, _mm256_xor_si256(A6l, A6h));
+    sum = _mm256_xor_si256(sum,
+        _mm256_xor_si256(_mm256_xor_si256(B0l, B0h), _mm256_xor_si256(B1l, B1h)));
+    sum = _mm256_xor_si256(sum,
+        _mm256_xor_si256(_mm256_xor_si256(B2l, B2h), _mm256_xor_si256(B3l, B3h)));
+    sum = _mm256_xor_si256(sum,
+        _mm256_xor_si256(_mm256_xor_si256(B4l, B4h), _mm256_xor_si256(B5l, B5h)));
+    sum = _mm256_xor_si256(sum, _mm256_xor_si256(B6l, B6h));
+    uint64_t h = f52_reduce256(sum);
+    const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
+    h = f52_avalanche64_sms(h + sl, 32, F52_P3, F52_SKIP_SHIFT);
+    h = f52_avalanche64_sms(h + sl, 34, F52_P3, 22);
+    return h;
+}
+
+/* ---- 128-bit long path (>=896B). ---- */
+F52_AVXIFMA_FN
+static void f52_long128_avxifma(const void * const key, size_t len, uint64_t seed, uint64_t out[2]) {
+    const uint8_t * const input = (const uint8_t *)key;
+    assert(len >= 896);
+    __m256i A0l, A0h, A1l, A1h, A2l, A2h, A3l, A3h, A4l, A4h, A5l, A5h, A6l, A6h;
+    __m256i B0l, B0h, B1l, B1h, B2l, B2h, B3l, B3h, B4l, B4h, B5l, B5h, B6l, B6h;
+    __m256i d0l, d0h, d1l, d1h, d2l, d2h, d3l, d3h, d4l, d4h, d5l, d5h, d6l, d6h;
+    __m256i d7l, d7h, d8l, d8h, d9l, d9h, d10l, d10h, d11l, d11h, d12l, d12h, d13l, d13h;
+    F52_INIT_256();
+    F52_ACCUMULATE_256();
+    __m256i lo_l = F52_CROSS_LO_256(A0l, A1l, A2l, A3l, A4l, A5l, A6l, B0l, B1l, B2l, B3l, B4l, B5l, B6l);
+    __m256i lo_h = F52_CROSS_LO_256(A0h, A1h, A2h, A3h, A4h, A5h, A6h, B0h, B1h, B2h, B3h, B4h, B5h, B6h);
+    __m256i hi_l = F52_CROSS_HI_256(A0l, A1l, A2l, A3l, A4l, A5l, A6l, B0l, B1l, B2l, B3l, B4l, B5l, B6l);
+    __m256i hi_h = F52_CROSS_HI_256(A0h, A1h, A2h, A3h, A4h, A5h, A6h, B0h, B1h, B2h, B3h, B4h, B5h, B6h);
+    uint64_t rlo = f52_reduce256(lo_l) ^ f52_reduce256(lo_h);
+    uint64_t rhi = f52_reduce256(hi_l) ^ f52_reduce256(hi_h);
+    const uint64_t sl = f52_seed_mix(seed + (uint64_t)len, 3, (int)len);
+    uint64_t x = (rlo ^ f52_rotl(rhi, 17)) + sl;
+    uint64_t y = (rhi ^ f52_rotl(rlo, 23)) + f52_rotl(sl, 32);
+    f52_avalanche128_lm(x, y, F52_LM_ROT, &x, &y);
+    f52_avalanche64x2(x + sl, y + sl, &out[0], &out[1], 35, F52_P2, 28, 37, F52_P1, 32);
+}
+#endif /* F52_USE_AVXIFMA */
+/* Dispatch to the 512-bit / 256-bit / scalar loop by F52_USE_AVX512 / F52_USE_AVXIFMA. */
+#if F52_USE_AVX512
 #  define f52_medium64_loop  f52_medium64_loop_avx512
 #  define f52_medium128_loop f52_medium128_loop_avx512
 #  define f52_long64         f52_long64_avx512
 #  define f52_long128        f52_long128_avx512
+#elif F52_USE_AVXIFMA
+#  define f52_medium64_loop  f52_medium64_loop_avxifma
+#  define f52_medium128_loop f52_medium128_loop_avxifma
+#  define f52_long64         f52_long64_avxifma
+#  define f52_long128        f52_long128_avxifma
 #else
 #  define f52_medium64_loop  f52_medium64_loop_scalar
 #  define f52_medium128_loop f52_medium128_loop_scalar
@@ -1163,8 +1639,9 @@ static inline void fifty2hash128(const void * const key, const size_t len, const
 }
 #endif
 
-/* #undef everything the consumer does not need, leaving only F52_VERSION /
- * F52_HAVE_AVX512IFMA and the two entry points. */
+/* #undef everything the consumer does not need, leaving only F52_VERSION,
+ * the detection/tier macros (F52_HAVE_AVX512IFMA / F52_HAVE_AVXIFMA /
+ * F52_USE_AVX512 / F52_USE_AVXIFMA) and the two entry points. */
 #ifdef F52_UNDEF_INLINE
 #  undef inline
 #  undef F52_UNDEF_INLINE
@@ -1195,6 +1672,23 @@ static inline void fifty2hash128(const void * const key, const size_t len, const
 #undef F52_M4
 #undef F52_M52
 #undef F52_LM_ROT
+#undef F52_AVXIFMA_FN
+#undef F52_CROSS_LO_256
+#undef F52_CROSS_HI_256
+#undef F52_MEDIUM_LOOP_256
+#undef F52_MLANE_256_PTR
+#undef F52_ACCUMULATE_256
+#undef F52_TAIL7_256
+#undef F52_BODY7_256
+#undef F52_BODY_PAIR_256
+#undef F52_CONSUME7_256
+#undef F52_LD14_256
+#undef F52_INIT_256
+#undef F52_LD_CONSUME7_256
+#undef F52_OFFV_LO
+#undef F52_OFFV_HI
+#undef F52_ROL256
+#undef F52_ROR256
 #undef f52_medium64_loop
 #undef f52_medium128_loop
 #undef f52_long64

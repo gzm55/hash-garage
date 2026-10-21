@@ -50,7 +50,7 @@ void     fifty2hash128(const void * key, size_t len, uint64_t seed, uint64_t out
 
 `fifty2hash128` writes two 64-bit halves: `out[0]` (low, `fifty2hash128l`) and `out[1]` (high, `fifty2hash128h`), each finalized separately. There is no dedicated API for the halves — obtain them through `fifty2hash128`'s `out`. The 64- and 128-bit outputs are not interchangeable: the low half of `fifty2hash128` is not `fifty2hash64`.
 
-Length tiers: `<=16` short, `17-96` medium, `97-895` medium loop, `>=896` long. The AVX-512 IFMA SIMD path and the scalar fallback are bit-identical; the SIMD core needs only AVX-512F + AVX-512IFMA.
+Length tiers: `<=16` short, `17-96` medium, `97-895` medium loop, `>=896` long. The AVX-512 IFMA (512-bit), AVX-IFMA (256-bit) and scalar fallback paths are bit-identical; the 512-bit SIMD core needs only AVX-512F + AVX-512IFMA, the 256-bit one only AVX2 + AVX-IFMA.
 
 ### integer bijections
 
@@ -134,11 +134,13 @@ Long-key bulk throughput (262144-byte keys, Ice Lake):
 
 | path | alignment | B/cycle | GB/s |
 |---|---|---|---|
-| SIMD (`fifty2hash64` / `fifty2hash128`) | aligned | 41.7 / 41.6 | ~83.5 |
-| SIMD (`fifty2hash64` / `fifty2hash128`) | misaligned | 30.7 / 30.6 | ~61.5 |
+| SIMD (`fifty2hash64` / `fifty2hash128`, 512-bit AVX-512 IFMA) | aligned | 41.7 / 41.6 | ~83.5 |
+| SIMD (`fifty2hash64` / `fifty2hash128`, 512-bit AVX-512 IFMA) | misaligned | 30.7 / 30.6 | ~61.5 |
+| SIMD (256-bit AVX-IFMA, 16 reg) | aligned | 22.6 | ~47 |
+| SIMD (256-bit AVX-IFMA, 16 reg) | misaligned | 19.1 | ~40 |
 | scalar fallback (no IFMA) | — | ~4.3 | ~9.1 |
 
-Misaligned = 1-7 byte offset; the path swaps one 64B load for two 32B loads plus a lane shuffle.
+Misaligned = 1-7 byte offset; the 512-bit path swaps one 64B load for two 32B loads plus a lane shuffle. True 64-byte-aligned input reads ~109 GB/s (512-bit) / ~47 GB/s (256-bit) — the "aligned" rows above are 8-byte-aligned. The 256-bit numbers are the 16-reg AVX-IFMA path (EVEX.256 + `-ffixed-ymm16..31`, bit-identical to real VEX.256).
 
 Short keys (0-16 B), throughput / latency in cycles:
 
