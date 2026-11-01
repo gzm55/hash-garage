@@ -153,3 +153,59 @@ Short keys (0-16 B), throughput / latency in cycles:
 | 128-bit | 16 | 9.8 | 38.8 |
 
 Short-key speed is mid-range by design: the bijection requirement and the quality of the seed mixing take priority over raw throughput.
+
+
+`xoroshiro128^*`
+---
+
+Non-cryptographic PRNG, a xoroshiro128 variant with a shared-offset (`65535*n1`) scramble. Header-only (`xoroshiro128xp.h`), single include, C99/C++11, no dependencies. Two 64-bit outputs per 128-bit state per step:
+
+    n1   = x0 ^ x1
+    sr   = (n1 << 16) - n1              (= 65535*n1)
+    out0 = x0 + rotl(sr,  8)
+    out1 = x1 + rotl(sr, 16)
+    x0'  = rotl(x0, 24) ^ n1 ^ (n1 << 16)
+    x1'  = rotl(n1, 37)
+
+The `(n1 << 16) - n1` step is the only nonlinearity: it borrows from bit 2 up, so only bits 0-1 of `sr` stay GF(2)-affine (a 2-bit window, vs 17 for the additive `(n1 << t) + n1` form). The two rotations differ (8 vs 16), so `sr` cannot cancel between `out0` and `out1`, and both sample `sr[48..63]` — the LSB linearity of `xoroshiro128+` (`out = x0 + x1`) is gone.
+
+32 independent xoroshiro128 states (4 groups × 8 lanes, full `2^128 - 1` cycle) are filled per step into one 64-word (512-byte) block, so two consecutive words always come from different streams.
+
+### API
+
+```c
+#include "xoroshiro128xp.h"
+
+void     xrsr128_xp_init(xrsr128_xp_t * r, uint64_t seed);
+uint64_t xrsr128_xp_u64(xrsr128_xp_t * r);
+void     xrsr128_xp_fill_u64(xrsr128_xp_t * r, uint64_t * dst, size_t n);
+double   xrsr128_xp_f64(xrsr128_xp_t * r);      /* [0,1), 53-bit   */
+double   xrsr128_xp_f64s(xrsr128_xp_t * r);     /* [-1,1), 54-bit  */
+```
+
+Header-only state struct `xrsr128_xp_t`. `fill_u64` is the fast path — use a large `n` (the 128-bit state stays in registers only within one call). AVX-512, AVX2, AArch64 NEON and scalar paths are bit-identical (KAT in `xoroshiro128xp-selftest.c`); `XRSR128_XP_FORCE_SCALAR` forces the scalar path.
+
+### Quality
+
+Passes the checking:
+
+- TestU01 SmallCrush / Crush / pseudoDIEHARD / BigCrush (BigCrush 160/160 on 4 of 6 seedbases; 2 carry one borderline p)
+- PractRand 128 GB × 3 seeds (no anomalies)
+- Per stream 8–24 GB, including arbitrarily-aligned `uint64_t` and `uint32_t` output streams — pass PractRand
+- hwd-repr to 10 TB
+- Vigna's coll-birth (collision + birthday spacings)
+- SmokeRand brief / default / full
+
+Bit-identical across AVX-512 (with/without AVX512BW), AVX2, NEON and scalar; matches the scalar reference byte-for-byte (4 seeds × 4096 words).
+
+### Speed
+
+ns/word, min of 5:
+
+| path | ns/word | GB/s | host |
+|---|---|---|---|
+| AVX-512 | 0.126 | 63.5 | Xeon Gold 5318Y |
+| AVX2 | 0.212 | 37.7 | Xeon Gold 5318Y |
+| scalar (auto-vectorized) | 0.170 | 47.1 | Xeon Gold 5318Y |
+| NEON per-word | 0.606 | 13.2 | Apple M2 |
+| NEON bulk (1 KB calls) | 0.236 | 33.9 | Apple M2 |
