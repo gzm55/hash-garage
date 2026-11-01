@@ -48,6 +48,9 @@
 #ifndef XRSR128_XP_H
 #define XRSR128_XP_H
 
+/* Version. Bump on each release. */
+#define XRSR128_XP_VERSION 1
+
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
