@@ -132,6 +132,13 @@
 #  define XRSR128_XP_VECTOR_HINT
 #endif
 
+/* Branch hint for the rare refill path in u64() (no-op off GCC/Clang). */
+#if defined(__GNUC__) || defined(__clang__)
+#  define XRSR128_XP_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#  define XRSR128_XP_UNLIKELY(x) (x)
+#endif
+
 /* ------------------------------------------------------------------ */
 /* ---- parameters ---- */
 /* ------------------------------------------------------------------ */
@@ -141,6 +148,7 @@
 #define XRSR128_XP_BUF      (XRSR128_XP_GROUPS * XRSR128_XP_STREAMS * 2)  /* 2 words/stream = 512 B */
 #define XRSR128_XP_P1       ((uint64_t)0x9E3779B97F4A7C15ULL)  /* golden gamma      */
 #define XRSR128_XP_SALT     ((uint64_t)0xD1B54A32D192ED03ULL)  /* seed decorrelation*/
+#define XRSR128_XP_2M53     (1.0 / 9007199254740992.0)         /* 2^-53, the f64 scale */
 
 /* A chunk is LANES u64; a group is CHUNKS chunks (LANES*CHUNKS == STREAMS). Scalar = LANES==1, so one struct covers every ISA. */
 #if XRSR128_XP_USE_AVX512
@@ -374,7 +382,7 @@ static inline void xrsr128_xp_fill_vect(xrsr128_xp_t * const r, uint64_t * const
 
 /* one 64-bit output */
 static inline uint64_t xrsr128_xp_u64(xrsr128_xp_t * const r) {
-    if (r->pos >= XRSR128_XP_BUF) {
+    if (XRSR128_XP_UNLIKELY(r->pos >= XRSR128_XP_BUF)) {
         xrsr128_xp_fill(r, r->buf, 1);
         r->pos = 0;
     }
@@ -384,17 +392,18 @@ static inline uint64_t xrsr128_xp_u64(xrsr128_xp_t * const r) {
 /* Bulk: n words to dst, no copy or alignment requirement.  Use a large n -- the 128-bit state stays in registers only within one call (AVX-512: 1024-word ~0.126 vs 64-word ~0.201 ns/word); use non-temporal stores if dst streams to DRAM. */
 static inline void xrsr128_xp_fill_u64(xrsr128_xp_t * const r, uint64_t * const XRSR128_XP_RESTRICT dst,
                                 const size_t n) {
-    size_t i = 0, m;
+    size_t i = 0;
     if (r->pos < XRSR128_XP_BUF) {                        /* drain the current block */
-        m = (size_t)XRSR128_XP_BUF - r->pos;
-        if (m > n) m = n;
+        const size_t left = (size_t)XRSR128_XP_BUF - r->pos;
+        const size_t m = left < n ? left : n;
         memcpy(dst, r->buf + r->pos, m * sizeof(uint64_t));
         r->pos += (unsigned)m;
         i = m;
     }
     {                                              /* whole blocks at once    */
         const size_t nb = (n - i) / (size_t)XRSR128_XP_BUF;
-        if (nb) { xrsr128_xp_fill(r, dst + i, nb); i += nb * (size_t)XRSR128_XP_BUF; }
+        xrsr128_xp_fill(r, dst + i, nb);           /* nb==0: no-op (0-trip loop) */
+        i += nb * (size_t)XRSR128_XP_BUF;
     }
     if (i < n) {                                   /* tail via the block       */
         xrsr128_xp_fill(r, r->buf, 1);
@@ -407,13 +416,92 @@ static inline void xrsr128_xp_fill_u64(xrsr128_xp_t * const r, uint64_t * const 
 
 /* [0,1), 53-bit mantissa (uses the top 53 bits); 1.0 never returned. */
 static inline double xrsr128_xp_f64(xrsr128_xp_t * const r) {
-    return (double)(xrsr128_xp_u64(r) >> 11) * (1.0 / 9007199254740992.0);
+    return (double)(xrsr128_xp_u64(r) >> 11) * XRSR128_XP_2M53;
 }
 
 /* [-1,1), 54 bits: sign bit from a discarded low bit; includes -1, excludes +1. */
 static inline double xrsr128_xp_f64s(xrsr128_xp_t * const r) {
     const int64_t k = (int64_t)(xrsr128_xp_u64(r) >> 10) - (INT64_C(1) << 53);
-    return (double)k * (1.0 / 9007199254740992.0);
+    return (double)k * XRSR128_XP_2M53;
 }
+
+/* Bulk [0,1): n doubles identical to n consecutive f64() calls.  The u64 stream
+ * is produced in chunks (a multiple of the 64-word block), then converted by a
+ * plain scalar loop the compiler can auto-vectorize (the shift + u64->f64 + scale). */
+static inline void xrsr128_xp_fill_f64(xrsr128_xp_t * const r,
+                                       double * const XRSR128_XP_RESTRICT dst, size_t n) {
+    enum { XRSR128_XP_CHUNK = 256 };            /* multiple of XRSR128_XP_BUF */
+    XRSR128_XP_ALIGN64 uint64_t tmp[XRSR128_XP_CHUNK];
+    double *p = dst;
+    while (n >= XRSR128_XP_CHUNK) {             /* full chunks, c == CHUNK (no ternary) */
+        xrsr128_xp_fill_u64(r, tmp, XRSR128_XP_CHUNK);
+        XRSR128_XP_VECTOR_HINT
+        for (size_t j = 0; j < XRSR128_XP_CHUNK; j++)   /* < 2^53: int64 cast -> cheaper signed u64->f64 */
+            p[j] = (double)(int64_t)(tmp[j] >> 11) * XRSR128_XP_2M53;
+        p += XRSR128_XP_CHUNK; n -= XRSR128_XP_CHUNK;
+    }
+    if (n) {                                    /* tail < CHUNK */
+        xrsr128_xp_fill_u64(r, tmp, n);
+        XRSR128_XP_VECTOR_HINT
+        for (size_t j = 0; j < n; j++)
+            p[j] = (double)(int64_t)(tmp[j] >> 11) * XRSR128_XP_2M53;
+    }
+}
+
+/* Bulk [-1,1): n doubles identical to n consecutive f64s() calls. */
+static inline void xrsr128_xp_fill_f64s(xrsr128_xp_t * const r,
+                                        double * const XRSR128_XP_RESTRICT dst, size_t n) {
+    enum { XRSR128_XP_CHUNK = 256 };            /* multiple of XRSR128_XP_BUF */
+    XRSR128_XP_ALIGN64 uint64_t tmp[XRSR128_XP_CHUNK];
+    double *p = dst;
+    while (n >= XRSR128_XP_CHUNK) {             /* full chunks, c == CHUNK (no ternary) */
+        xrsr128_xp_fill_u64(r, tmp, XRSR128_XP_CHUNK);
+        XRSR128_XP_VECTOR_HINT
+        for (size_t j = 0; j < XRSR128_XP_CHUNK; j++) {
+            const int64_t k = (int64_t)(tmp[j] >> 10) - (INT64_C(1) << 53);
+            p[j] = (double)k * XRSR128_XP_2M53;
+        }
+        p += XRSR128_XP_CHUNK; n -= XRSR128_XP_CHUNK;
+    }
+    if (n) {                                    /* tail < CHUNK */
+        xrsr128_xp_fill_u64(r, tmp, n);
+        XRSR128_XP_VECTOR_HINT
+        for (size_t j = 0; j < n; j++) {
+            const int64_t k = (int64_t)(tmp[j] >> 10) - (INT64_C(1) << 53);
+            p[j] = (double)k * XRSR128_XP_2M53;
+        }
+    }
+}
+
+/* Drop every internal macro; keep only the include guard and public API. */
+#undef XRSR128_XP_USE_AVX512
+#undef XRSR128_XP_USE_AVX2
+#undef XRSR128_XP_USE_NEON
+#undef XRSR128_XP_BYTE_ROT512
+#undef XRSR128_XP_BYTE_ROT256
+#undef XRSR128_XP_BYTE_ROT_NEON
+#undef XRSR128_XP_ALIGN16
+#undef XRSR128_XP_ALIGN64
+#undef XRSR128_XP_RESTRICT
+#undef XRSR128_XP_VECTOR_HINT
+#undef XRSR128_XP_UNLIKELY
+#undef XRSR128_XP_GROUPS
+#undef XRSR128_XP_STREAMS
+#undef XRSR128_XP_BUF
+#undef XRSR128_XP_P1
+#undef XRSR128_XP_SALT
+#undef XRSR128_XP_LANES
+#undef XRSR128_XP_CHUNKS
+#undef XRSR128_XP_XOR
+#undef XRSR128_XP_ADD
+#undef XRSR128_XP_SUB
+#undef XRSR128_XP_SLLI
+#undef XRSR128_XP_ROL
+#undef XRSR128_XP_LOAD
+#undef XRSR128_XP_STORE
+#undef XRSR128_XP_ROL_BYTE
+#undef XRSR128_XP_IDX
+#undef XRSR128_XP_2M53
+#undef xrsr128_xp_fill
 
 #endif /* XRSR128_XP_H */
