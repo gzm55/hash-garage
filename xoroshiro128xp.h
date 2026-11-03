@@ -139,6 +139,10 @@
 #  define XRSR128_XP_UNLIKELY(x) (x)
 #endif
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ------------------------------------------------------------------ */
 /* ---- parameters ---- */
 /* ------------------------------------------------------------------ */
@@ -530,13 +534,12 @@ static inline void xrsr128_xp_step1(uint64_t * const lo, uint64_t * const hi) {
  * Scalar, branch-free loops -> auto-vectorizes across the 32 streams. */
 static inline void xrsr128_xp_jump2k(xrsr128_xp_t * const r, unsigned k) {
     enum { NS = XRSR128_XP_GROUPS * XRSR128_XP_STREAMS };   /* 32 streams */
-    uint64_t a0[NS], a1[NS], b0[NS], b1[NS];
+    uint64_t a0[NS] = {0}, a1[NS] = {0}, b0[NS], b1[NS];
     uint64_t plo, phi;
     int i, j;
     k &= 127u;
     plo = xrsr128_xp_jump_poly[k][0]; phi = xrsr128_xp_jump_poly[k][1];
     memcpy(b0, r->s0, sizeof b0); memcpy(b1, r->s1, sizeof b1);
-    for (i = 0; i < NS; i++) { a0[i] = 0; a1[i] = 0; }
     for (i = 0; i < 128; i++) {
         const uint64_t bit  = (i < 64) ? (plo >> i) : (phi >> (i - 64));
         const uint64_t mask = (uint64_t)0 - (bit & 1u);      /* all-ones or all-zeros */
@@ -727,5 +730,9 @@ static int xrsr128_xp_jump_selftest(void) {
 #undef XRSR128_XP_IDX
 #undef XRSR128_XP_2M53
 #undef xrsr128_xp_fill
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif /* XRSR128_XP_H */
