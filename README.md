@@ -181,9 +181,26 @@ uint64_t xrsr128_xp_u64(xrsr128_xp_t * r);
 void     xrsr128_xp_fill_u64(xrsr128_xp_t * r, uint64_t * dst, size_t n);
 double   xrsr128_xp_f64(xrsr128_xp_t * r);      /* [0,1), 53-bit   */
 double   xrsr128_xp_f64s(xrsr128_xp_t * r);     /* [-1,1), 54-bit  */
+void     xrsr128_xp_fill_f64(xrsr128_xp_t * r, double * dst, size_t n);
+void     xrsr128_xp_fill_f64s(xrsr128_xp_t * r, double * dst, size_t n);
+void     xrsr128_xp_jump(xrsr128_xp_t * r);      /* +2^64 blocks    */
+void     xrsr128_xp_long_jump(xrsr128_xp_t * r); /* +2^96 blocks    */
 ```
 
-Header-only state struct `xrsr128_xp_t`. `fill_u64` is the fast path — use a large `n` (the 128-bit state stays in registers only within one call). AVX-512, AVX2, AArch64 NEON and scalar paths are bit-identical (KAT in `xoroshiro128xp-selftest.c`); `XRSR128_XP_FORCE_SCALAR` forces the scalar path.
+Header-only state struct `xrsr128_xp_t`. `fill_u64` / `fill_f64` are the fast paths — use a large `n` (the 128-bit state stays in registers only within one call). AVX-512, AVX2, AArch64 NEON and scalar paths are bit-identical (KAT in `xoroshiro128xp-selftest.c`); `XRSR128_XP_FORCE_SCALAR` forces the scalar path.
+
+### Single-stream (testing)
+
+```c
+#include "xoroshiro128xp.h"
+
+void     xrsr128_xp1_init(xrsr128_xp1_t * s, uint64_t seed);
+uint64_t xrsr128_xp1_u64(xrsr128_xp1_t * s);     /* out0, out1 alternating */
+void     xrsr128_xp1_fill(xrsr128_xp1_t * s, uint64_t * dst, size_t n);
+void     xrsr128_xp1_jump2k(xrsr128_xp1_t * s, unsigned k);   /* +2^k steps */
+```
+
+`xrsr128_xp1_t` is a single xoroshiro128 lane standalone (128-bit state), scalar; it is for testing/analysis of one stream and its output matches lane 0 of the 32-stream generator bit-for-bit. A single lane's very-long-run quality depends on the output rotation distances `ROT0`/`ROT1` and is weaker than the 32-stream interleaving — use the `xrsr128_xp_*` (32-stream) API for production/bulk output. `xrsr128_xp1_jump2k(k)` advances 2^k steps (same jump polynomials).
 
 ### Quality
 
@@ -191,7 +208,7 @@ Passes the checking:
 
 - TestU01 SmallCrush / Crush / pseudoDIEHARD / BigCrush (BigCrush 160/160 on 4 of 6 seedbases; 2 carry one borderline p)
 - PractRand 128 GB × 3 seeds (no anomalies)
-- Per stream 8–24 GB, including arbitrarily-aligned `uint64_t` and `uint32_t` output streams — pass PractRand
+- Per-stream slices of the 32-stream interleaving, and each `xp1` single lane, over 8–24 GB — pass PractRand (a single lane is not vetted at multi-TB; the 32-stream interleaving is)
 - hwd-repr to 10 TB
 - Vigna's coll-birth (collision + birthday spacings)
 - SmokeRand brief / default / full
