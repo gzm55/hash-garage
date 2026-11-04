@@ -3,14 +3,14 @@
  *
  *     n1   = x0 ^ x1
  *     sr   = (n1 << 16) - n1              (= 65535 * n1 = (2^16 - 1) * n1)
- *     out0 = x0 + rotl(sr,  8)
- *     out1 = x1 + rotl(sr, 16)
+ *     out0 = x0 + rotl(sr, ROT0)
+ *     out1 = x1 + rotl(sr, ROT1)
  *     x0'  = rotl(x0, 24) ^ n1 ^ (n1 << 16)
  *     x1'  = rotl(n1, 37)
  *
  * sr is the only nonlinear step; (2^16*n1 - n1) borrows from bit 2 up, so only
  * bits 0-1 of sr stay GF(2)-affine (a 2-bit window, vs 17 for the (n1<<t)+n1
- * form).  The two rotations differ (8 vs 16) so sr cannot cancel between out0
+ * form).  The two rotations differ (ROT0 vs ROT1, default 8 vs 16) so sr cannot cancel between out0
  * and out1, and both sample sr[48..63], above that window -- so the LSB
  * linearity of xoroshiro128+ (out = x0+x1) is gone.  (n1<<16) is shared with
  * the state update, so a step is 13 vector ops.
@@ -153,6 +153,8 @@ extern "C" {
 #define XRSR128_XP_P1       ((uint64_t)0x9E3779B97F4A7C15ULL)  /* golden gamma      */
 #define XRSR128_XP_SALT     ((uint64_t)0xD1B54A32D192ED03ULL)  /* seed decorrelation*/
 #define XRSR128_XP_2M53     (1.0 / 9007199254740992.0)         /* 2^-53, the f64 scale */
+#define XRSR128_XP_ROT0     8                 /* out0 = x0 + rotl(sr, ROT0)          */
+#define XRSR128_XP_ROT1     16                /* out1 = x1 + rotl(sr, ROT1)          */
 
 /* Jump polynomials: entry [k] = x^(2^k) mod P (xoroshiro128 characteristic
  * polynomial), as a 128-bit coefficient vector (lo,hi); bit i set = T^i term.
@@ -373,8 +375,8 @@ static inline void xrsr128_xp_fill_scalar(xrsr128_xp_t * const XRSR128_XP_RESTRI
                 const uint64_t x0 = r->s0[g][j], x1 = r->s1[g][j];
                 const uint64_t n1 = x0 ^ x1;
                 const uint64_t sr = (n1 << 16) - n1;         /* *65535 */
-                o[j] = x0 + xrsr128_xp_rotl64(sr, 8);
-                o[8 + j] = x1 + xrsr128_xp_rotl64(sr, 16);
+                o[j] = x0 + xrsr128_xp_rotl64(sr, XRSR128_XP_ROT0);
+                o[8 + j] = x1 + xrsr128_xp_rotl64(sr, XRSR128_XP_ROT1);
                 r->s0[g][j] = xrsr128_xp_rotl64(x0, 24) ^ n1 ^ (n1 << 16);
                 r->s1[g][j] = xrsr128_xp_rotl64(n1, 37);
             }
@@ -457,6 +459,19 @@ static inline xrsr128_xp_chunk_t xrsr128_xp_vrolb(xrsr128_xp_chunk_t x, const in
 #  define XRSR128_XP_ROL_BYTE(x, k)  XRSR128_XP_ROL((x), (k) * 8)
 #endif
 
+/* Output rotate for the vector path: byte-rotate fast path only when the
+ * distance is a multiple of 8; otherwise a general vector rotate. */
+#if (XRSR128_XP_ROT0 % 8) == 0
+#  define XRSR128_XP_ROT0V(x)  XRSR128_XP_ROL_BYTE((x), XRSR128_XP_ROT0 / 8)
+#else
+#  define XRSR128_XP_ROT0V(x)  XRSR128_XP_ROL((x), XRSR128_XP_ROT0)
+#endif
+#if (XRSR128_XP_ROT1 % 8) == 0
+#  define XRSR128_XP_ROT1V(x)  XRSR128_XP_ROL_BYTE((x), XRSR128_XP_ROT1 / 8)
+#else
+#  define XRSR128_XP_ROT1V(x)  XRSR128_XP_ROL((x), XRSR128_XP_ROT1)
+#endif
+
 /* buffer index of lane j, word w (0=out0, 1=out1) of group g, chunk c */
 #define XRSR128_XP_IDX(g, w, c, j) ((((g) * 2 + (w)) * 8) + (c) * XRSR128_XP_LANES + (j))
 
@@ -477,8 +492,8 @@ static inline void xrsr128_xp_fill_vect(xrsr128_xp_t * const r, uint64_t * const
                     const xrsr128_xp_chunk_t x0 = S0[g][c], x1 = S1[g][c];
                     const xrsr128_xp_chunk_t n1 = XRSR128_XP_XOR(x1, x0);
                     const xrsr128_xp_chunk_t sr = XRSR128_XP_SUB(XRSR128_XP_SLLI(n1, 16), n1);        /* *65535 */
-                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g0 + g, 0, c, 0)], XRSR128_XP_ADD(x0, XRSR128_XP_ROL_BYTE(sr, 8/8)));
-                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g0 + g, 1, c, 0)], XRSR128_XP_ADD(x1, XRSR128_XP_ROL_BYTE(sr, 16/8)));
+                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g0 + g, 0, c, 0)], XRSR128_XP_ADD(x0, XRSR128_XP_ROT0V(sr)));
+                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g0 + g, 1, c, 0)], XRSR128_XP_ADD(x1, XRSR128_XP_ROT1V(sr)));
                     S0[g][c] = XRSR128_XP_XOR(XRSR128_XP_ROL_BYTE(x0, 24/8), XRSR128_XP_XOR(n1, XRSR128_XP_SLLI(n1, 16)));
                     S1[g][c] = XRSR128_XP_ROL(n1, 37);
                 }
@@ -499,8 +514,8 @@ static inline void xrsr128_xp_fill_vect(xrsr128_xp_t * const r, uint64_t * const
                     const xrsr128_xp_chunk_t x0 = r->s0[g][c], x1 = r->s1[g][c];
                     const xrsr128_xp_chunk_t n1 = XRSR128_XP_XOR(x1, x0);
                     const xrsr128_xp_chunk_t sr = XRSR128_XP_SUB(XRSR128_XP_SLLI(n1, 16), n1);        /* *65535 */
-                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g, 0, c, 0)], XRSR128_XP_ADD(x0, XRSR128_XP_ROL_BYTE(sr, 8/8)));
-                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g, 1, c, 0)], XRSR128_XP_ADD(x1, XRSR128_XP_ROL_BYTE(sr, 16/8)));
+                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g, 0, c, 0)], XRSR128_XP_ADD(x0, XRSR128_XP_ROT0V(sr)));
+                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g, 1, c, 0)], XRSR128_XP_ADD(x1, XRSR128_XP_ROT1V(sr)));
                     r->s0[g][c] = XRSR128_XP_XOR(XRSR128_XP_ROL_BYTE(x0, 24/8), XRSR128_XP_XOR(n1, XRSR128_XP_SLLI(n1, 16)));
                     r->s1[g][c] = XRSR128_XP_ROL(n1, 37);
                 }
@@ -666,6 +681,75 @@ static inline void xrsr128_xp_long_jump(xrsr128_xp_t * const r) {
     xrsr128_xp_jump128(r, UINT64_C(1) << 32, 0);
 }
 
+/* ------------------------------------------------------------------ */
+/* ---- single stream (one xoroshiro128 lane) -- advanced, for testing ---- */
+/* One of the 32 lanes standalone: 128-bit state, two outputs (out0, out1)
+ * per step.  Scalar.  Emit via xrsr128_xp1_u64() (alternating out0/out1) or
+ * xrsr128_xp1_fill().  A single lane's long-run quality depends on ROT0/ROT1;
+ * the vetted high-quality output is the 32-stream interleaving. */
+typedef struct {
+    uint64_t s0, s1;      /* xoroshiro128 state                     */
+    uint64_t pending;     /* cached out1 while out0 is being emitted */
+    unsigned phase;       /* 0: emit out0 next; 1: emit pending      */
+} xrsr128_xp1_t;
+
+static inline void xrsr128_xp1_init(xrsr128_xp1_t * const s, const uint64_t seed) {
+    uint64_t x = seed ^ XRSR128_XP_SALT;
+    s->s0 = xrsr128_xp_splitmix(&x);
+    s->s1 = xrsr128_xp_splitmix(&x);
+    if (!(s->s0 | s->s1)) s->s0 = XRSR128_XP_P1;
+    s->pending = 0; s->phase = 0;
+}
+
+/* advance one step: state -> state, and emit the pair (o0 = out0, o1 = out1) */
+static inline void xrsr128_xp1_next(xrsr128_xp1_t * const s,
+                                    uint64_t * const o0, uint64_t * const o1) {
+    const uint64_t n1 = s->s0 ^ s->s1, sr = (n1 << 16) - n1;
+    *o0 = s->s0 + xrsr128_xp_rotl64(sr, XRSR128_XP_ROT0);
+    *o1 = s->s1 + xrsr128_xp_rotl64(sr, XRSR128_XP_ROT1);
+    xrsr128_xp_step1(&s->s0, &s->s1);
+}
+
+static inline uint64_t xrsr128_xp1_u64(xrsr128_xp1_t * const s) {
+    uint64_t o0, o1;
+    if (s->phase) { s->phase = 0; return s->pending; }
+    xrsr128_xp1_next(s, &o0, &o1);
+    s->pending = o1; s->phase = 1;
+    return o0;
+}
+
+static inline void xrsr128_xp1_fill(xrsr128_xp1_t * const s,
+                                    uint64_t * const XRSR128_XP_RESTRICT dst, const size_t n) {
+    size_t i = 0;
+    if (s->phase) { dst[i++] = s->pending; s->phase = 0; }
+    while (i + 1 < n) {
+        uint64_t o0, o1;
+        xrsr128_xp1_next(s, &o0, &o1);
+        dst[i] = o0; dst[i + 1] = o1;
+        i += 2;
+    }
+    if (i < n) {                                   /* one leftover: emit out0, cache out1 */
+        uint64_t o0, o1;
+        xrsr128_xp1_next(s, &o0, &o1);
+        dst[i] = o0; s->pending = o1; s->phase = 1;
+    }
+}
+
+static inline void xrsr128_xp1_jump2k(xrsr128_xp1_t * const s, unsigned k) {
+    uint64_t a0 = 0, a1 = 0, b0 = s->s0, b1 = s->s1, plo, phi;
+    int i;
+    k &= 127u;
+    plo = xrsr128_xp_jump_poly[k][0]; phi = xrsr128_xp_jump_poly[k][1];
+    for (i = 0; i < 128; i++) {
+        const uint64_t bit = (i < 64) ? (plo >> i) : (phi >> (i - 64));
+        const uint64_t mask = (uint64_t)0 - (bit & 1u);
+        a0 ^= b0 & mask; a1 ^= b1 & mask;
+        xrsr128_xp_step1(&b0, &b1);
+    }
+    s->s0 = a0; s->s1 = a1;
+    s->pending = 0; s->phase = 0;
+}
+
 #if 0 /* Jump-poly table self-check / regeneration.
  * Builds M (columns = step1(e_i)), squares it k times for M^(2^k), and recovers
  * the coefficient vector x^(2^k) mod P by exact GF(2) linear solve on the
@@ -729,6 +813,10 @@ static int xrsr128_xp_jump_selftest(void) {
 #undef XRSR128_XP_ROL_BYTE
 #undef XRSR128_XP_IDX
 #undef XRSR128_XP_2M53
+#undef XRSR128_XP_ROT0
+#undef XRSR128_XP_ROT1
+#undef XRSR128_XP_ROT0V
+#undef XRSR128_XP_ROT1V
 #undef xrsr128_xp_fill
 
 #ifdef __cplusplus
