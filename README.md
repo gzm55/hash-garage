@@ -162,12 +162,12 @@ Non-cryptographic PRNG, a xoroshiro128 variant with a shared-offset (`65535*n1`)
 
     n1   = x0 ^ x1
     sr   = (n1 << 16) - n1              (= 65535*n1)
-    out0 = x0 + rotl(sr,  8)
-    out1 = x1 + rotl(sr, 16)
+    out0 = x0 + rotl(sr, 24)
+    out1 = x1 + rotl(sr,  5)
     x0'  = rotl(x0, 24) ^ n1 ^ (n1 << 16)
     x1'  = rotl(n1, 37)
 
-The `(n1 << 16) - n1` step is the only nonlinearity: it borrows from bit 2 up, so only bits 0-1 of `sr` stay GF(2)-affine (a 2-bit window, vs 17 for the additive `(n1 << t) + n1` form). The two rotations differ (8 vs 16), so `sr` cannot cancel between `out0` and `out1`, and both sample `sr[48..63]` — the LSB linearity of `xoroshiro128+` (`out = x0 + x1`) is gone.
+The `(n1 << 16) - n1` step is the only nonlinearity; the two output rotations differ (24 vs 5).
 
 32 independent xoroshiro128 states (4 groups × 8 lanes, full `2^128 - 1` cycle) are filled per step into one 64-word (512-byte) block, so two consecutive words always come from different streams.
 
@@ -187,7 +187,17 @@ void     xrsr128_xp_jump(xrsr128_xp_t * r);      /* +2^64 blocks    */
 void     xrsr128_xp_long_jump(xrsr128_xp_t * r); /* +2^96 blocks    */
 ```
 
-Header-only state struct `xrsr128_xp_t`. `fill_u64` / `fill_f64` are the fast paths — use a large `n` (the 128-bit state stays in registers only within one call). AVX-512, AVX2, AArch64 NEON and scalar paths are bit-identical (KAT in `xoroshiro128xp-selftest.c`); `XRSR128_XP_FORCE_SCALAR` forces the scalar path.
+Header-only state struct `xrsr128_xp_t`. `fill_u64` / `fill_f64` are the fast paths — use a large `n` (the 128-bit state stays in registers only within one call). AVX-512, AVX2, AArch64 NEON and scalar paths are bit-identical (KAT in `xoroshiro128xp-selftest.c`).
+
+### Public macros
+
+| macro | meaning |
+|---|---|
+| `XRSR128_XP_VERSION` | library version |
+| `XRSR128_XP_STEP_BITS` | output bits per state step of the 32-stream generator (one block) |
+| `XRSR128_XP1_STEP_BITS` | output bits per step of a single stream (`out0`+`out1`) |
+
+`XRSR128_XP_STEP_BITS` / `XRSR128_XP1_STEP_BITS` are `static_assert`-checked against the block layout (C11 / C++11 and later).
 
 ### Single-stream (testing)
 
@@ -204,7 +214,7 @@ void     xrsr128_xp1_jump2k(xrsr128_xp1_t * s, unsigned k);   /* +2^k steps */
 
 ### Quality
 
-Passes the checking:
+Under re-testing after the `ROT0`/`ROT1` retune (24/5); the results below are from the previous 8/16 tuning. Known issue (previous 8/16): the `xp1` single-stream output has an FPF quality problem at long lengths, which the 24/5 retune targets.
 
 - TestU01 SmallCrush / Crush / pseudoDIEHARD / BigCrush (BigCrush 160/160 on 4 of 6 seedbases; 2 carry one borderline p)
 - PractRand 128 GB × 3 seeds (no anomalies)
@@ -224,5 +234,5 @@ ns/word, min of 5:
 | AVX-512 | 0.126 | 63.5 | Xeon Gold 5318Y |
 | AVX2 | 0.212 | 37.7 | Xeon Gold 5318Y |
 | scalar (auto-vectorized) | 0.170 | 47.1 | Xeon Gold 5318Y |
-| NEON per-word | 0.606 | 13.2 | Apple M2 |
-| NEON bulk (1 KB calls) | 0.236 | 33.9 | Apple M2 |
+| NEON per-word | 0.600 | 13.3 | Apple M2 |
+| NEON bulk (1 KB calls) | 0.201 | 39.8 | Apple M2 |

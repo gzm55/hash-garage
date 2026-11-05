@@ -8,12 +8,7 @@
  *     x0'  = rotl(x0, 24) ^ n1 ^ (n1 << 16)
  *     x1'  = rotl(n1, 37)
  *
- * sr is the only nonlinear step; (2^16*n1 - n1) borrows from bit 2 up, so only
- * bits 0-1 of sr stay GF(2)-affine (a 2-bit window, vs 17 for the (n1<<t)+n1
- * form).  The two rotations differ (ROT0 vs ROT1, default 8 vs 16) so sr cannot cancel between out0
- * and out1, and both sample sr[48..63], above that window -- so the LSB
- * linearity of xoroshiro128+ (out = x0+x1) is gone.  (n1<<16) is shared with
- * the state update, so a step is 13 vector ops.
+ * sr is the only nonlinear step.
  *
  * (out0, out1) is surjective, not injective (~63.2% coverage).  The reachable
  * state set is 2^128-1 (all-zero excluded), so the words are balanced only up
@@ -49,7 +44,7 @@
 #define XRSR128_XP_H
 
 /* Version. Bump on each release. */
-#define XRSR128_XP_VERSION 2
+#define XRSR128_XP_VERSION 3-dev
 
 #include <stddef.h>
 #include <stdint.h>
@@ -150,11 +145,21 @@ extern "C" {
 #define XRSR128_XP_GROUPS   4                 /* 4 groups x 8 lanes = 32 streams     */
 #define XRSR128_XP_STREAMS  8                 /* logical lanes per group             */
 #define XRSR128_XP_BUF      (XRSR128_XP_GROUPS * XRSR128_XP_STREAMS * 2)  /* 2 words/stream = 512 B */
+
+/* Output bits produced by exactly one state step (public; not #undef'd). */
+#define XRSR128_XP_STEP_BITS   4096   /* 32-stream: one 64-word block      */
+#define XRSR128_XP1_STEP_BITS  128    /* single stream: out0 + out1 (2 words) */
+#if defined(__cplusplus) && __cplusplus >= 201103L
+static_assert(XRSR128_XP_STEP_BITS == XRSR128_XP_BUF * 64, "step bits");
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(XRSR128_XP_STEP_BITS == XRSR128_XP_BUF * 64, "step bits");
+#endif
+
 #define XRSR128_XP_P1       ((uint64_t)0x9E3779B97F4A7C15ULL)  /* golden gamma      */
 #define XRSR128_XP_SALT     ((uint64_t)0xD1B54A32D192ED03ULL)  /* seed decorrelation*/
 #define XRSR128_XP_2M53     (1.0 / 9007199254740992.0)         /* 2^-53, the f64 scale */
-#define XRSR128_XP_ROT0     8                 /* out0 = x0 + rotl(sr, ROT0)          */
-#define XRSR128_XP_ROT1     16                /* out1 = x1 + rotl(sr, ROT1)          */
+#define XRSR128_XP_ROT0     24               /* out0 = x0 + rotl(sr, ROT0)          */
+#define XRSR128_XP_ROT1     5                /* out1 = x1 + rotl(sr, ROT1)          */
 
 /* Jump polynomials: entry [k] = x^(2^k) mod P (xoroshiro128 characteristic
  * polynomial), as a 128-bit coefficient vector (lo,hi); bit i set = T^i term.
@@ -475,6 +480,35 @@ static inline xrsr128_xp_chunk_t xrsr128_xp_vrolb(xrsr128_xp_chunk_t x, const in
 /* buffer index of lane j, word w (0=out0, 1=out1) of group g, chunk c */
 #define XRSR128_XP_IDX(g, w, c, j) ((((g) * 2 + (w)) * 8) + (c) * XRSR128_XP_LANES + (j))
 
+/* sr = (n1<<16) - n1.  clang scalarizes the NEON subtract or (AVX2) rewrites it
+ * as n1*65535, so freeze the vector subtract; other compilers/ISAs use the C form. */
+static inline xrsr128_xp_chunk_t xrsr128_xp_sr(const xrsr128_xp_chunk_t n1, const xrsr128_xp_chunk_t t16) {
+#if defined(__clang__) && !defined(_MSC_VER) && XRSR128_XP_USE_AVX2 && !XRSR128_XP_USE_AVX512
+    xrsr128_xp_chunk_t sr;
+    __asm__("vpsubq %2, %1, %0" : "=&x"(sr) : "x"(t16), "x"(n1));
+    return sr;
+#elif defined(__clang__) && XRSR128_XP_USE_NEON
+    xrsr128_xp_chunk_t sr;
+    __asm__("sub %0.2d, %1.2d, %2.2d" : "=&w"(sr) : "w"(t16), "w"(n1));
+    return sr;
+#else
+    return XRSR128_XP_SUB(t16, n1);
+#endif
+}
+
+/* One lane step, shared by the per-block and half-resident loops.  A macro so
+ * the half-resident loop's S0/S1 stay register-resident (no pointer escape). */
+#define XRSR128_XP_LANE(S0L, S1L, O, C, GI) do { \
+    const xrsr128_xp_chunk_t x0 = (S0L), x1 = (S1L); \
+    const xrsr128_xp_chunk_t n1 = XRSR128_XP_XOR(x1, x0); \
+    const xrsr128_xp_chunk_t t16 = XRSR128_XP_SLLI(n1, 16); \
+    const xrsr128_xp_chunk_t sr = xrsr128_xp_sr(n1, t16); \
+    XRSR128_XP_STORE(&(O)[XRSR128_XP_IDX((GI), 0, (C), 0)], XRSR128_XP_ADD(x0, XRSR128_XP_ROT0V(sr))); \
+    XRSR128_XP_STORE(&(O)[XRSR128_XP_IDX((GI), 1, (C), 0)], XRSR128_XP_ADD(x1, XRSR128_XP_ROT1V(sr))); \
+    (S0L) = XRSR128_XP_XOR(XRSR128_XP_ROL_BYTE(x0, 24/8), XRSR128_XP_XOR(n1, t16)); \
+    (S1L) = XRSR128_XP_ROL(n1, 37); \
+} while (0)
+
 /* Fill nblk 64-word blocks.  NEON nblk>1: each 2-group half sweeps all blocks with its 16 state vectors resident (state loaded/stored once per half); nblk==1 or non-NEON: per block. */
 static inline void xrsr128_xp_fill_vect(xrsr128_xp_t * const r, uint64_t * const XRSR128_XP_RESTRICT out, const size_t nblk) {
 #if XRSR128_XP_USE_NEON
@@ -488,15 +522,8 @@ static inline void xrsr128_xp_fill_vect(xrsr128_xp_t * const r, uint64_t * const
             }
             for (b = 0; b < nblk; b++) {
                 uint64_t * const o = out + b * (XRSR128_XP_GROUPS * 16);
-                for (c = 0; c < XRSR128_XP_CHUNKS; c++) for (g = 0; g < 2; g++) {
-                    const xrsr128_xp_chunk_t x0 = S0[g][c], x1 = S1[g][c];
-                    const xrsr128_xp_chunk_t n1 = XRSR128_XP_XOR(x1, x0);
-                    const xrsr128_xp_chunk_t sr = XRSR128_XP_SUB(XRSR128_XP_SLLI(n1, 16), n1);        /* *65535 */
-                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g0 + g, 0, c, 0)], XRSR128_XP_ADD(x0, XRSR128_XP_ROT0V(sr)));
-                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g0 + g, 1, c, 0)], XRSR128_XP_ADD(x1, XRSR128_XP_ROT1V(sr)));
-                    S0[g][c] = XRSR128_XP_XOR(XRSR128_XP_ROL_BYTE(x0, 24/8), XRSR128_XP_XOR(n1, XRSR128_XP_SLLI(n1, 16)));
-                    S1[g][c] = XRSR128_XP_ROL(n1, 37);
-                }
+                for (c = 0; c < XRSR128_XP_CHUNKS; c++) for (g = 0; g < 2; g++)
+                    XRSR128_XP_LANE(S0[g][c], S1[g][c], o, c, g0 + g);
             }
             for (g = 0; g < 2; g++) for (c = 0; c < XRSR128_XP_CHUNKS; c++) {
                 r->s0[g0 + g][c] = S0[g][c]; r->s1[g0 + g][c] = S1[g][c];
@@ -510,15 +537,8 @@ static inline void xrsr128_xp_fill_vect(xrsr128_xp_t * const r, uint64_t * const
         for (b = 0; b < nblk; b++) {
             uint64_t * const o = out + b * (XRSR128_XP_GROUPS * 16);
             for (c = 0; c < XRSR128_XP_CHUNKS; c++)
-                for (g = 0; g < XRSR128_XP_GROUPS; g++) {
-                    const xrsr128_xp_chunk_t x0 = r->s0[g][c], x1 = r->s1[g][c];
-                    const xrsr128_xp_chunk_t n1 = XRSR128_XP_XOR(x1, x0);
-                    const xrsr128_xp_chunk_t sr = XRSR128_XP_SUB(XRSR128_XP_SLLI(n1, 16), n1);        /* *65535 */
-                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g, 0, c, 0)], XRSR128_XP_ADD(x0, XRSR128_XP_ROT0V(sr)));
-                    XRSR128_XP_STORE(&o[XRSR128_XP_IDX(g, 1, c, 0)], XRSR128_XP_ADD(x1, XRSR128_XP_ROT1V(sr)));
-                    r->s0[g][c] = XRSR128_XP_XOR(XRSR128_XP_ROL_BYTE(x0, 24/8), XRSR128_XP_XOR(n1, XRSR128_XP_SLLI(n1, 16)));
-                    r->s1[g][c] = XRSR128_XP_ROL(n1, 37);
-                }
+                for (g = 0; g < XRSR128_XP_GROUPS; g++)
+                    XRSR128_XP_LANE(r->s0[g][c], r->s1[g][c], o, c, g);
         }
     }
 }
@@ -812,6 +832,7 @@ static int xrsr128_xp_jump_selftest(void) {
 #undef XRSR128_XP_STORE
 #undef XRSR128_XP_ROL_BYTE
 #undef XRSR128_XP_IDX
+#undef XRSR128_XP_LANE
 #undef XRSR128_XP_2M53
 #undef XRSR128_XP_ROT0
 #undef XRSR128_XP_ROT1
