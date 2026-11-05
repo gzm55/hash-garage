@@ -227,12 +227,25 @@ Bit-identical across AVX-512 (with/without AVX512BW), AVX2, NEON and scalar; mat
 
 ### Speed
 
-ns/word, min of 5:
+`prng-speed` harness (1024-word `fill_u64` calls, ns/word, min of 9) and bulk
+(`fill_u64` with one call per destination), Xeon Gold 5318Y, gcc 16.2 / clang 20.1.8:
 
-| path | ns/word | GB/s | host |
-|---|---|---|---|
-| AVX-512 | 0.126 | 63.5 | Xeon Gold 5318Y |
-| AVX2 | 0.212 | 37.7 | Xeon Gold 5318Y |
-| scalar (auto-vectorized) | 0.170 | 47.1 | Xeon Gold 5318Y |
-| NEON per-word | 0.600 | 13.3 | Apple M2 |
-| NEON bulk (1 KB calls) | 0.201 | 39.8 | Apple M2 |
+| path | compiler | prng-speed ns/word | GB/s | bulk 64 KB | bulk 512 KB |
+|---|---|---|---|---|---|
+| AVX-512 | gcc 16.2 | 0.126 | 63.5 | 34.1 | 34.0 |
+| AVX-512 | clang 20 | 0.127 | 63.0 | 33.2 | 34.8 |
+| AVX2 | gcc 16.2 | 0.245 | 32.7 | 22.9 | 23.7 |
+| AVX2 | clang 20 | 0.277 | 28.9 | 23.6 | 23.7 |
+| scalar (auto-vectorized) | gcc 16.2 | 0.169 | 47.3 | — | — |
+| NEON per-word | clang, Apple M2 | 0.600 | 13.3 | — | — |
+| NEON bulk (1 KB calls) | clang, Apple M2 | 0.201 | 39.8 | — | — |
+
+Bulk columns are GB/s; they are memory-bound and drop once the destination leaves
+L1 (48 KB on this host). AVX-512 keeps `vpmullq`/`vprolq`; AVX2 pays one extra
+shift per step for the non-byte-multiple `ROT1 = 5`. The clang AVX2 number includes
+the register-pressure workaround in `fill_vect` (state update before the output
+stores + grouped loads/stores), worth ~10% for bulk and ~2% at 1 KB. Clang's
+`XRSR128_XP_FORCE_SCALAR` path is much slower (3.3 ns/word) because it does not
+auto-vectorize the carried-dependency loop; the scalar row is gcc. The NEON rows
+are from the previous 8/16 tuning and need re-measuring on M2: 24/5 makes `ROT1`
+a general shift-or rotate instead of a byte permute.

@@ -498,6 +498,31 @@ static inline xrsr128_xp_chunk_t xrsr128_xp_sr(const xrsr128_xp_chunk_t n1, cons
 
 /* One lane step, shared by the per-block and half-resident loops.  A macro so
  * the half-resident loop's S0/S1 stay register-resident (no pointer escape). */
+/* AVX2 has 16 ymm registers: writing the new state before the two output stores
+ * ends t16's live range early and, together with the load/store grouping in the
+ * block loop below, buys ~10% once the destination leaves L1 (8192 words:
+ * 21.5 -> 23.7 GB/s, 65536: 21.5 -> 24.5), at the cost of ~2% on small blocks.
+ * AVX-512 has 32 registers, gains nothing from the early release and loses
+ * 4-8% from the longer x0/x1 range; gcc and NEON produce the same or slightly
+ * worse code, so both keep the straight-line order (byte-identical output). */
+#if defined(__clang__) && !defined(_MSC_VER) && XRSR128_XP_USE_AVX2 && !XRSR128_XP_USE_AVX512
+#  define XRSR128_XP_LANE_RG 1
+#else
+#  define XRSR128_XP_LANE_RG 0
+#endif
+
+#if XRSR128_XP_LANE_RG
+#define XRSR128_XP_LANE(S0L, S1L, O, C, GI) do { \
+    const xrsr128_xp_chunk_t x0 = (S0L), x1 = (S1L); \
+    const xrsr128_xp_chunk_t n1 = XRSR128_XP_XOR(x1, x0); \
+    const xrsr128_xp_chunk_t t16 = XRSR128_XP_SLLI(n1, 16); \
+    const xrsr128_xp_chunk_t sr = xrsr128_xp_sr(n1, t16); \
+    (S0L) = XRSR128_XP_XOR(XRSR128_XP_ROL_BYTE(x0, 24/8), XRSR128_XP_XOR(n1, t16)); \
+    (S1L) = XRSR128_XP_ROL(n1, 37); \
+    XRSR128_XP_STORE(&(O)[XRSR128_XP_IDX((GI), 0, (C), 0)], XRSR128_XP_ADD(x0, XRSR128_XP_ROT0V(sr))); \
+    XRSR128_XP_STORE(&(O)[XRSR128_XP_IDX((GI), 1, (C), 0)], XRSR128_XP_ADD(x1, XRSR128_XP_ROT1V(sr))); \
+} while (0)
+#else
 #define XRSR128_XP_LANE(S0L, S1L, O, C, GI) do { \
     const xrsr128_xp_chunk_t x0 = (S0L), x1 = (S1L); \
     const xrsr128_xp_chunk_t n1 = XRSR128_XP_XOR(x1, x0); \
@@ -508,6 +533,7 @@ static inline xrsr128_xp_chunk_t xrsr128_xp_sr(const xrsr128_xp_chunk_t n1, cons
     (S0L) = XRSR128_XP_XOR(XRSR128_XP_ROL_BYTE(x0, 24/8), XRSR128_XP_XOR(n1, t16)); \
     (S1L) = XRSR128_XP_ROL(n1, 37); \
 } while (0)
+#endif
 
 /* Fill nblk 64-word blocks.  NEON nblk>1: each 2-group half sweeps all blocks with its 16 state vectors resident (state loaded/stored once per half); nblk==1 or non-NEON: per block. */
 static inline void xrsr128_xp_fill_vect(xrsr128_xp_t * const r, uint64_t * const XRSR128_XP_RESTRICT out, const size_t nblk) {
@@ -536,9 +562,21 @@ static inline void xrsr128_xp_fill_vect(xrsr128_xp_t * const r, uint64_t * const
         size_t b; int c, g;
         for (b = 0; b < nblk; b++) {
             uint64_t * const o = out + b * (XRSR128_XP_GROUPS * 16);
+#if XRSR128_XP_LANE_RG
+            /* load the whole chunk first, then the lane steps, then the state
+             * stores together: fewer live ranges during the output stores. */
+            for (c = 0; c < XRSR128_XP_CHUNKS; c++) {
+                xrsr128_xp_chunk_t s0v[XRSR128_XP_GROUPS], s1v[XRSR128_XP_GROUPS];
+                for (g = 0; g < XRSR128_XP_GROUPS; g++) { s0v[g] = r->s0[g][c]; s1v[g] = r->s1[g][c]; }
+                for (g = 0; g < XRSR128_XP_GROUPS; g++)
+                    XRSR128_XP_LANE(s0v[g], s1v[g], o, c, g);
+                for (g = 0; g < XRSR128_XP_GROUPS; g++) { r->s0[g][c] = s0v[g]; r->s1[g][c] = s1v[g]; }
+            }
+#else
             for (c = 0; c < XRSR128_XP_CHUNKS; c++)
                 for (g = 0; g < XRSR128_XP_GROUPS; g++)
                     XRSR128_XP_LANE(r->s0[g][c], r->s1[g][c], o, c, g);
+#endif
         }
     }
 }
@@ -833,6 +871,7 @@ static int xrsr128_xp_jump_selftest(void) {
 #undef XRSR128_XP_ROL_BYTE
 #undef XRSR128_XP_IDX
 #undef XRSR128_XP_LANE
+#undef XRSR128_XP_LANE_RG
 #undef XRSR128_XP_2M53
 #undef XRSR128_XP_ROT0
 #undef XRSR128_XP_ROT1
