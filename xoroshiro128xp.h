@@ -160,6 +160,13 @@ _Static_assert(XRSR128_XP_STEP_BITS == XRSR128_XP_BUF * 64, "step bits");
 #define XRSR128_XP_2M53     (1.0 / 9007199254740992.0)         /* 2^-53, the f64 scale */
 #define XRSR128_XP_ROT0     24               /* out0 = x0 + rotl(sr, ROT0)          */
 #define XRSR128_XP_ROT1     5                /* out1 = x1 + rotl(sr, ROT1)          */
+#if defined(__cplusplus) && __cplusplus >= 201103L
+static_assert(XRSR128_XP_ROT0 >= 1 && XRSR128_XP_ROT0 <= 63, "ROT0 must be 1..63");
+static_assert(XRSR128_XP_ROT1 >= 1 && XRSR128_XP_ROT1 <= 63, "ROT1 must be 1..63");
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(XRSR128_XP_ROT0 >= 1 && XRSR128_XP_ROT0 <= 63, "ROT0 must be 1..63");
+_Static_assert(XRSR128_XP_ROT1 >= 1 && XRSR128_XP_ROT1 <= 63, "ROT1 must be 1..63");
+#endif
 
 /* Jump polynomials: entry [k] = x^(2^k) mod P (xoroshiro128 characteristic
  * polynomial), as a 128-bit coefficient vector (lo,hi); bit i set = T^i term.
@@ -429,13 +436,16 @@ static inline void xrsr128_xp_fill_scalar(xrsr128_xp_t * const XRSR128_XP_RESTRI
 
 #if XRSR128_XP_BYTE_ROT512 || XRSR128_XP_BYTE_ROT256 || XRSR128_XP_BYTE_ROT_NEON
 /* rotl by 8k bits inside every 64-bit lane is a byte permutation: one vpshufb
- * (vqtbl1q_u8 on NEON).  The index pattern is a single 128-bit lane (two 64-bit
- * groups) and repeats, so one 16-byte constant broadcast to the register is
- * enough.  Index p of a 64-bit group reads byte (p - k) mod 8 of the same group. */
-XRSR128_XP_ALIGN16 static const uint64_t xrsr128_xp_rolmask[3][2] = {
-    { (uint64_t)0x0605040302010007ULL, (uint64_t)0x0e0d0c0b0a09080fULL },
-    { (uint64_t)0x0504030201000706ULL, (uint64_t)0x0d0c0b0a09080f0eULL },
-    { (uint64_t)0x0403020100070605ULL, (uint64_t)0x0c0b0a09080f0e0dULL }
+ * (vqtbl1q_u8 on NEON).  ROT is 1..63 (static_assert above), so a multiple of 8
+ * is 8..56 and k = ROT/8 is a valid table index 1..7. */
+XRSR128_XP_ALIGN16 static const uint64_t xrsr128_xp_rolmask[7][2] = {
+    { (uint64_t)0x0605040302010007ULL, (uint64_t)0x0E0D0C0B0A09080FULL },
+    { (uint64_t)0x0504030201000706ULL, (uint64_t)0x0D0C0B0A09080F0EULL },
+    { (uint64_t)0x0403020100070605ULL, (uint64_t)0x0C0B0A09080F0E0DULL },
+    { (uint64_t)0x0302010007060504ULL, (uint64_t)0x0B0A09080F0E0D0CULL },
+    { (uint64_t)0x0201000706050403ULL, (uint64_t)0x0A09080F0E0D0C0BULL },
+    { (uint64_t)0x0100070605040302ULL, (uint64_t)0x09080F0E0D0C0B0AULL },
+    { (uint64_t)0x0007060504030201ULL, (uint64_t)0x080F0E0D0C0B0A09ULL }
 };
 #endif
 
