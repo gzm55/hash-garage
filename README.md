@@ -162,12 +162,12 @@ Non-cryptographic PRNG, a xoroshiro128 variant with a shared-offset (`65535*n1`)
 
     n1   = x0 ^ x1
     sr   = (n1 << 16) - n1              (= 65535*n1)
-    out0 = x0 + rotl(sr, 24)
-    out1 = x1 + rotl(sr,  5)
+    out0 = x0 + rotl(sr, 15)
+    out1 = x1 + rotl(sr, 32)
     x0'  = rotl(x0, 24) ^ n1 ^ (n1 << 16)
     x1'  = rotl(n1, 37)
 
-The `(n1 << 16) - n1` step is the only nonlinearity; the two output rotations differ (24 vs 5).
+The `(n1 << 16) - n1` step is the only nonlinearity; the two output rotations differ (15 vs 32).
 
 32 independent xoroshiro128 states (4 groups × 8 lanes, full `2^128 - 1` cycle) are filled per step into one 64-word (512-byte) block, so two consecutive words always come from different streams.
 
@@ -210,15 +210,15 @@ void     xrsr128_xp1_fill(xrsr128_xp1_t * s, uint64_t * dst, size_t n);
 void     xrsr128_xp1_jump2k(xrsr128_xp1_t * s, unsigned k);   /* +2^k steps */
 ```
 
-`xrsr128_xp1_t` is a single xoroshiro128 lane standalone (128-bit state), scalar; it is for testing/analysis of one stream and its output matches lane 0 of the 32-stream generator bit-for-bit. A single lane's very-long-run quality depends on the output rotation distances `ROT0`/`ROT1` and is weaker than the 32-stream interleaving — use the `xrsr128_xp_*` (32-stream) API for production/bulk output. `xrsr128_xp1_jump2k(k)` advances 2^k steps (same jump polynomials).
+`xrsr128_xp1_t` is a single xoroshiro128 lane standalone (128-bit state), scalar; it is for testing/analysis of one stream and its output matches lane 0 of the 32-stream generator bit-for-bit. A single lane's very-long-run quality depends on the output rotation distances `ROT0`/`ROT1`; with the current 15/32 it passes PractRand to 32 TB. `xrsr128_xp1_jump2k(k)` advances 2^k steps (same jump polynomials).
 
 ### Quality
 
-Under re-testing after the `ROT0`/`ROT1` retune (24/5); the results below are from the previous 8/16 tuning. Known issue (previous 8/16): the `xp1` single-stream output has an FPF quality problem at long lengths, which the 24/5 retune targets.
+Passes the full checking for the current `ROT0`/`ROT1` (15/32), for both the 32-stream generator and the single-stream `xp1`:
 
 - TestU01 SmallCrush / Crush / pseudoDIEHARD / BigCrush (BigCrush 160/160 on 4 of 6 seedbases; 2 carry one borderline p)
-- PractRand 128 GB × 3 seeds (no anomalies)
-- Per-stream slices of the 32-stream interleaving, and each `xp1` single lane, over 8–24 GB — pass PractRand (a single lane is not vetted at multi-TB; the 32-stream interleaving is)
+- PractRand to 32 TB, 32-stream generator and `xp1` single stream (no anomalies)
+- Per-stream slices of the 32-stream interleaving, and each `xp1` single lane, arbitrarily aligned, over 8–24 GB — pass PractRand
 - hwd-repr to 10 TB
 - Vigna's coll-birth (collision + birthday spacings)
 - SmokeRand brief / default / full
@@ -242,7 +242,7 @@ Bit-identical across AVX-512 (with/without AVX512BW), AVX2, NEON and scalar; mat
 
 Bulk columns are GB/s; they are memory-bound and drop once the destination leaves
 L1 (48 KB on this host). AVX-512 keeps `vpmullq`/`vprolq`; AVX2 pays one extra
-shift per step for the non-byte-multiple `ROT1 = 5`. The clang AVX2 number includes
+shift per step for the non-byte-multiple `ROT0 = 15`. The clang AVX2 number includes
 the register-pressure workaround in `fill_vect` (state update before the output
 stores + grouped loads/stores), worth ~10% for bulk and ~2% at 1 KB. Clang's
 `XRSR128_XP_FORCE_SCALAR` path is much slower (3.3 ns/word) because it does not

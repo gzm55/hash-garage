@@ -44,7 +44,7 @@
 #define XRSR128_XP_H
 
 /* Version. Bump on each release. */
-#define XRSR128_XP_VERSION 3-dev
+#define XRSR128_XP_VERSION 3
 
 #include <stddef.h>
 #include <stdint.h>
@@ -158,8 +158,8 @@ _Static_assert(XRSR128_XP_STEP_BITS == XRSR128_XP_BUF * 64, "step bits");
 #define XRSR128_XP_P1       ((uint64_t)0x9E3779B97F4A7C15ULL)  /* golden gamma      */
 #define XRSR128_XP_SALT     ((uint64_t)0xD1B54A32D192ED03ULL)  /* seed decorrelation*/
 #define XRSR128_XP_2M53     (1.0 / 9007199254740992.0)         /* 2^-53, the f64 scale */
-#define XRSR128_XP_ROT0     24               /* out0 = x0 + rotl(sr, ROT0)          */
-#define XRSR128_XP_ROT1     5                /* out1 = x1 + rotl(sr, ROT1)          */
+#define XRSR128_XP_ROT0     15               /* out0 = x0 + rotl(sr, ROT0)          */
+#define XRSR128_XP_ROT1     32               /* out1 = x1 + rotl(sr, ROT1)          */
 #if defined(__cplusplus) && __cplusplus >= 201103L
 static_assert(XRSR128_XP_ROT0 >= 1 && XRSR128_XP_ROT0 <= 63, "ROT0 must be 1..63");
 static_assert(XRSR128_XP_ROT1 >= 1 && XRSR128_XP_ROT1 <= 63, "ROT1 must be 1..63");
